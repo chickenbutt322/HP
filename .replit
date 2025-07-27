@@ -10,3 +10,5 @@ mode = "sequential"
 [[workflows.workflow.tasks]]
 task = "shell.exec"
 args = "python DeepInfamousDirectories/main.py"
+
+[nix]
