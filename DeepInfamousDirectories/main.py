@@ -1497,7 +1497,6 @@ async def show_leaderboard(interaction: discord.Interaction):
         else:
             rank_emoji = f"`{i:2d}.`"
 
-        ```python
         level = data['level']
         xp = data['xp']
         multiplier = get_total_xp_multiplier(user,level)
