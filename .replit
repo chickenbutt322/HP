@@ -1,1 +1,12 @@
 modules = ["python-3.11"]
+[workflows]
+runButton = "Run Discord Bot"
+
+[[workflows.workflow]]
+name = "Run Discord Bot"
+author = 45587111
+mode = "sequential"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "python DeepInfamousDirectories/main.py"
