@@ -1,3 +1,4 @@
+
 import discord
 from discord.ext import commands
 from discord import app_commands
@@ -8,9 +9,11 @@ from threading import Thread
 import asyncio
 import random
 import json
+import aiofiles
 from datetime import datetime, timedelta
 import re
 import uuid
+import logging
 
 load_dotenv()
 TOKEN = os.getenv("TOKEN")
@@ -22,6 +25,16 @@ intents.message_content = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
+# Data persistence files
+DATA_DIR = "bot_data"
+LEVELS_FILE = f"{DATA_DIR}/user_levels.json"
+WARNINGS_FILE = f"{DATA_DIR}/user_warnings.json"
+PUNISHMENTS_FILE = f"{DATA_DIR}/active_punishments.json"
+GIVEAWAYS_FILE = f"{DATA_DIR}/active_giveaways.json"
+
+# Create data directory
+os.makedirs(DATA_DIR, exist_ok=True)
+
 # Store active giveaways
 active_giveaways = {}
 
@@ -31,6 +44,193 @@ active_punishments = {}  # {user_id: {'type': 'mute'/'ban', 'until': datetime, '
 
 # Store user XP and levels
 user_levels = {}  # {user_id: {'xp': int, 'level': int, 'last_message': datetime}}
+
+# Level perk role mapping
+LEVEL_PERK_ROLES = {
+    5: 1399183777053540482,   # Stream permissions
+    10: 1399183863292366868,  # Staff eligibility
+    15: 1399183927176073228,  # Image posting
+    20: 1399183944292892682,  # Link posting
+    25: 1399184030746017934,  # +1 Giveaway Entry
+    30: 1399184098962182256,  # Soundboard access
+    35: 1399184155664847018,  # +1 Giveaway Entry + 10% XP
+    40: 1399184223062982756,  # Snipe command
+    50: 1399184297956741220,  # +10% XP Boost
+    60: 1399184371524571196,  # +3 Giveaway Entries Total
+    70: 1399184413958340668,  # Priority support
+    80: 1399184469809954846,  # IGC tryouts + 10% XP + 4 Giveaway Entries
+    90: 1399184502705623161,  # Trusted status
+    100: 1399184585040072736  # Custom role + Top tier
+}
+
+# Level perk XP bonuses (stacks with base multipliers)
+LEVEL_PERK_XP_BONUSES = {
+    35: 0.10,  # +10% XP from level 35 perk
+    50: 0.10,  # +10% XP from level 50 perk  
+    80: 0.10   # +10% XP from level 80 perk
+}
+
+# Level perk giveaway bonuses
+LEVEL_PERK_GIVEAWAY_BONUSES = {
+    25: 1,   # +1 entry
+    35: 1,   # +1 entry (stacks with level 25)
+    60: 3,   # +3 entries total
+    80: 4    # +4 entries total
+}
+
+# XP processing lock to prevent race conditions
+xp_locks = {}
+
+async def save_data():
+    """Save all data to files"""
+    try:
+        # Convert datetime objects for JSON serialization
+        levels_data = {}
+        for user_id, data in user_levels.items():
+            levels_data[str(user_id)] = {
+                'xp': data['xp'],
+                'level': data['level'],
+                'last_message': data['last_message'].isoformat()
+            }
+
+        warnings_data = {}
+        for user_id, data in user_warnings.items():
+            warnings_data[str(user_id)] = {
+                'warnings': data['warnings'],
+                'history': [{
+                    'id': h['id'],
+                    'reason': h['reason'],
+                    'date': h['date'].isoformat(),
+                    'moderator': h['moderator']
+                } for h in data['history']]
+            }
+
+        punishments_data = {}
+        for user_id, data in active_punishments.items():
+            punishments_data[str(user_id)] = {
+                'type': data['type'],
+                'until': data['until'].isoformat(),
+                'reason': data['reason']
+            }
+
+        giveaways_data = {}
+        for msg_id, data in active_giveaways.items():
+            giveaways_data[str(msg_id)] = {
+                **data,
+                'end_time': data['end_time'].isoformat()
+            }
+
+        # Save to files
+        async with aiofiles.open(LEVELS_FILE, 'w') as f:
+            await f.write(json.dumps(levels_data, indent=2))
+        
+        async with aiofiles.open(WARNINGS_FILE, 'w') as f:
+            await f.write(json.dumps(warnings_data, indent=2))
+            
+        async with aiofiles.open(PUNISHMENTS_FILE, 'w') as f:
+            await f.write(json.dumps(punishments_data, indent=2))
+            
+        async with aiofiles.open(GIVEAWAYS_FILE, 'w') as f:
+            await f.write(json.dumps(giveaways_data, indent=2))
+
+    except Exception as e:
+        logging.error(f"Error saving data: {e}")
+
+async def load_data():
+    """Load all data from files"""
+    global user_levels, user_warnings, active_punishments, active_giveaways
+    
+    try:
+        # Load levels
+        if os.path.exists(LEVELS_FILE):
+            async with aiofiles.open(LEVELS_FILE, 'r') as f:
+                data = json.loads(await f.read())
+                user_levels = {}
+                for user_id_str, level_data in data.items():
+                    user_levels[int(user_id_str)] = {
+                        'xp': level_data['xp'],
+                        'level': level_data['level'],
+                        'last_message': datetime.fromisoformat(level_data['last_message'])
+                    }
+
+        # Load warnings
+        if os.path.exists(WARNINGS_FILE):
+            async with aiofiles.open(WARNINGS_FILE, 'r') as f:
+                data = json.loads(await f.read())
+                user_warnings = {}
+                for user_id_str, warning_data in data.items():
+                    user_warnings[int(user_id_str)] = {
+                        'warnings': warning_data['warnings'],
+                        'history': [{
+                            'id': h['id'],
+                            'reason': h['reason'],
+                            'date': datetime.fromisoformat(h['date']),
+                            'moderator': h['moderator']
+                        } for h in warning_data['history']]
+                    }
+
+        # Load punishments
+        if os.path.exists(PUNISHMENTS_FILE):
+            async with aiofiles.open(PUNISHMENTS_FILE, 'r') as f:
+                data = json.loads(await f.read())
+                active_punishments = {}
+                for user_id_str, punishment_data in data.items():
+                    user_id = int(user_id_str)
+                    until_date = datetime.fromisoformat(punishment_data['until'])
+                    
+                    # Only load if punishment hasn't expired
+                    if until_date > datetime.utcnow():
+                        active_punishments[user_id] = {
+                            'type': punishment_data['type'],
+                            'until': until_date,
+                            'reason': punishment_data['reason']
+                        }
+                        
+                        # Reschedule the punishment end
+                        remaining_seconds = (until_date - datetime.utcnow()).total_seconds()
+                        if punishment_data['type'] == 'mute':
+                            asyncio.create_task(schedule_unmute(user_id, None, remaining_seconds))
+                        elif punishment_data['type'] == 'tempban':
+                            asyncio.create_task(schedule_unban(user_id, None, remaining_seconds))
+
+        # Load giveaways
+        if os.path.exists(GIVEAWAYS_FILE):
+            async with aiofiles.open(GIVEAWAYS_FILE, 'r') as f:
+                data = json.loads(await f.read())
+                active_giveaways = {}
+                for msg_id_str, giveaway_data in data.items():
+                    msg_id = int(msg_id_str)
+                    end_time = datetime.fromisoformat(giveaway_data['end_time'])
+                    
+                    # Only load if giveaway hasn't ended
+                    if not giveaway_data.get('ended', False) and end_time > datetime.utcnow():
+                        giveaway_data['end_time'] = end_time
+                        active_giveaways[msg_id] = giveaway_data
+                        
+                        # Reschedule giveaway end
+                        remaining_seconds = (end_time - datetime.utcnow()).total_seconds()
+                        asyncio.create_task(end_giveaway_after_delay(msg_id, remaining_seconds))
+
+    except Exception as e:
+        logging.error(f"Error loading data: {e}")
+
+async def assign_level_perk_roles(member: discord.Member, new_level: int, old_level: int):
+    """Assign level perk roles when user levels up"""
+    try:
+        roles_to_add = []
+        for level, role_id in LEVEL_PERK_ROLES.items():
+            if new_level >= level > old_level:
+                role = member.guild.get_role(role_id)
+                if role and role not in member.roles:
+                    roles_to_add.append(role)
+        
+        if roles_to_add:
+            await member.add_roles(*roles_to_add, reason=f"Level perk roles for reaching level {new_level}")
+            
+    except discord.Forbidden:
+        logging.error(f"Missing permissions to assign roles to {member}")
+    except Exception as e:
+        logging.error(f"Error assigning level perk roles: {e}")
 
 def calculate_xp_for_level(level):
     """Calculate total XP needed to reach a specific level"""
@@ -70,57 +270,93 @@ def get_level_xp_multiplier(level):
         return 1.0
 
 def get_total_xp_multiplier(member, level):
-    """Get total XP multiplier combining level and booster bonuses"""
+    """Get total XP multiplier combining level, booster, and perk bonuses"""
     level_multiplier = get_level_xp_multiplier(level)
     booster_multiplier = get_booster_xp_multiplier(member)
+    
+    # Add level perk XP bonuses
+    perk_bonus = 0.0
+    for perk_level, bonus in LEVEL_PERK_XP_BONUSES.items():
+        if level >= perk_level:
+            perk_bonus += bonus
 
-    # Combine multipliers (additive bonuses)
-    total_bonus = (level_multiplier - 1.0) + (booster_multiplier - 1.0)
+    # Combine all bonuses (additive)
+    total_bonus = (level_multiplier - 1.0) + (booster_multiplier - 1.0) + perk_bonus
     return 1.0 + total_bonus
 
 def get_giveaway_entry_multiplier(member):
-    """Get giveaway entry multiplier based on booster tier"""
-    if not member or not member.premium_since:
+    """Get giveaway entry multiplier based on booster tier and level perks"""
+    if not member:
         return 1
 
-    guild = member.guild
-    mega_booster_role = guild.get_role(1397371634012258374)  # Mega Booster (3+ boosts)
-    super_booster_role = guild.get_role(1397371603255296181)  # Super Booster (2 boosts)
-    server_booster_role = guild.get_role(1397361697324269679)  # Server Booster (1 boost)
+    # Base booster multiplier
+    booster_multiplier = 1
+    if member.premium_since:
+        guild = member.guild
+        mega_booster_role = guild.get_role(1397371634012258374)  # Mega Booster (3+ boosts)
+        super_booster_role = guild.get_role(1397371603255296181)  # Super Booster (2 boosts)
+        server_booster_role = guild.get_role(1397361697324269679)  # Server Booster (1 boost)
 
-    if mega_booster_role and mega_booster_role in member.roles:
-        return 7  # 7x giveaway entries
-    elif super_booster_role and super_booster_role in member.roles:
-        return 5  # 5x giveaway entries
-    elif server_booster_role and server_booster_role in member.roles:
-        return 3  # 3x giveaway entries
-    else:
-        return 1
+        if mega_booster_role and mega_booster_role in member.roles:
+            booster_multiplier = 7  # 7x giveaway entries
+        elif super_booster_role and super_booster_role in member.roles:
+            booster_multiplier = 5  # 5x giveaway entries
+        elif server_booster_role and server_booster_role in member.roles:
+            booster_multiplier = 3  # 3x giveaway entries
 
-def add_xp(user_id, base_xp, member):
-    """Add XP to a user with level and booster multipliers"""
-    if user_id not in user_levels:
-        user_levels[user_id] = {'xp': 0, 'level': 1, 'last_message': datetime.utcnow()}
+    # Level perk bonuses
+    user_level = user_levels.get(member.id, {'level': 1})['level']
+    level_bonus = 0
+    
+    # Get highest applicable level perk bonus
+    for perk_level, bonus in LEVEL_PERK_GIVEAWAY_BONUSES.items():
+        if user_level >= perk_level:
+            level_bonus = max(level_bonus, bonus)
+    
+    return booster_multiplier + level_bonus
 
-    current_level = user_levels[user_id]['level']
-    multiplier = get_total_xp_multiplier(member, current_level)
-    xp_gained = int(base_xp * multiplier)
+async def add_xp(user_id, base_xp, member):
+    """Add XP to a user with level and booster multipliers - thread safe"""
+    # Prevent race conditions with per-user locks
+    if user_id not in xp_locks:
+        xp_locks[user_id] = asyncio.Lock()
+    
+    async with xp_locks[user_id]:
+        try:
+            if user_id not in user_levels:
+                user_levels[user_id] = {'xp': 0, 'level': 1, 'last_message': datetime.utcnow()}
 
-    user_levels[user_id]['xp'] += xp_gained
-    user_levels[user_id]['last_message'] = datetime.utcnow()
+            old_level = user_levels[user_id]['level']
+            current_level = old_level
+            multiplier = get_total_xp_multiplier(member, current_level)
+            xp_gained = int(base_xp * multiplier)
 
-    # Check for level up
-    current_xp = user_levels[user_id]['xp']
-    new_level = current_level
+            user_levels[user_id]['xp'] += xp_gained
+            user_levels[user_id]['last_message'] = datetime.utcnow()
 
-    while current_xp >= calculate_xp_for_level(new_level + 1):
-        new_level += 1
+            # Check for level up
+            current_xp = user_levels[user_id]['xp']
+            new_level = current_level
 
-    if new_level > current_level:
-        user_levels[user_id]['level'] = new_level
-        return new_level, xp_gained  # Return new level and XP gained
+            while current_xp >= calculate_xp_for_level(new_level + 1):
+                new_level += 1
 
-    return None, xp_gained  # No level up, just return XP gained
+            if new_level > current_level:
+                user_levels[user_id]['level'] = new_level
+                
+                # Assign level perk roles
+                await assign_level_perk_roles(member, new_level, old_level)
+                
+                # Save data after level up
+                await save_data()
+                
+                return new_level, xp_gained  # Return new level and XP gained
+
+            return None, xp_gained  # No level up, just return XP gained
+            
+        except Exception as e:
+            logging.error(f"Error adding XP to user {user_id}: {e}")
+            return None, 0
 
 def get_level_progress(user_id, member):
     """Get user's level progress information, including booster bonuses"""
@@ -156,24 +392,24 @@ def get_level_progress(user_id, member):
 
 app = Flask('')
 
-
 @app.route('/')
 def home():
     return "Bot is alive!"
 
-
 def run():
     app.run(host='0.0.0.0', port=8080)
-
 
 def keep_alive():
     t = Thread(target=run)
     t.start()
 
-
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user}")
+    
+    # Load data on startup
+    await load_data()
+    
     try:
         synced = await bot.tree.sync()
         print(f"Synced {len(synced)} command(s)")
@@ -215,7 +451,6 @@ async def list_commands(interaction: discord.Interaction):
     )
 
     await interaction.response.send_message(embed=embed, ephemeral=True)
-
 
 def parse_duration(duration_str):
     """Parse duration string like '5 hours', '2 days', '30 minutes'"""
@@ -352,6 +587,9 @@ async def giveaway_slash(
     # Schedule giveaway end
     asyncio.create_task(end_giveaway_after_delay(giveaway_msg.id, parsed_duration.total_seconds()))
 
+    # Save data
+    await save_data()
+
     # Send success message (only visible to command user)
     success_msg = f"✅ Giveaway created successfully in {channel.mention}!"
 
@@ -393,6 +631,7 @@ async def end_giveaway(giveaway_id):
         )
         await message.edit(embed=embed)
         giveaway['ended'] = True
+        await save_data()
         return
 
     # Get eligible users
@@ -434,6 +673,7 @@ async def end_giveaway(giveaway_id):
         )
         await message.edit(embed=embed)
         giveaway['ended'] = True
+        await save_data()
         return
 
     # Select winners
@@ -496,6 +736,7 @@ async def end_giveaway(giveaway_id):
 
     await message.edit(embed=embed)
     giveaway['ended'] = True
+    await save_data()
 
 @bot.tree.command(name="reroll", description="Reroll a giveaway to select new winners")
 @app_commands.describe(message_id="The message ID of the giveaway to reroll")
@@ -616,24 +857,39 @@ async def warn_user(interaction: discord.Interaction, user: discord.Member, reas
             punishment_message = "\n❌ Failed to ban user (insufficient permissions)"
     elif warning_count >= 25:
         # 30 day mute
-        await apply_mute(user, interaction.guild, 30, f"{warning_count} warnings")
-        punishment_message = "\n🔇 **30-DAY MUTE** applied automatically!"
+        success = await apply_mute(user, interaction.guild, 30, f"{warning_count} warnings")
+        if success:
+            punishment_message = "\n🔇 **30-DAY MUTE** applied automatically!"
+        else:
+            punishment_message = "\n❌ Failed to mute user (insufficient permissions)"
     elif warning_count >= 20:
         # 10 day mute
-        await apply_mute(user, interaction.guild, 10, f"{warning_count} warnings")
-        punishment_message = "\n🔇 **10-DAY MUTE** applied automatically!"
+        success = await apply_mute(user, interaction.guild, 10, f"{warning_count} warnings")
+        if success:
+            punishment_message = "\n🔇 **10-DAY MUTE** applied automatically!"
+        else:
+            punishment_message = "\n❌ Failed to mute user (insufficient permissions)"
     elif warning_count >= 15:
         # 5 day mute
-        await apply_mute(user, interaction.guild, 5, f"{warning_count} warnings")
-        punishment_message = "\n🔇 **5-DAY MUTE** applied automatically!"
+        success = await apply_mute(user, interaction.guild, 5, f"{warning_count} warnings")
+        if success:
+            punishment_message = "\n🔇 **5-DAY MUTE** applied automatically!"
+        else:
+            punishment_message = "\n❌ Failed to mute user (insufficient permissions)"
     elif warning_count >= 10:
         # 3 day mute
-        await apply_mute(user, interaction.guild, 3, f"{warning_count} warnings")
-        punishment_message = "\n🔇 **3-DAY MUTE** applied automatically!"
+        success = await apply_mute(user, interaction.guild, 3, f"{warning_count} warnings")
+        if success:
+            punishment_message = "\n🔇 **3-DAY MUTE** applied automatically!"
+        else:
+            punishment_message = "\n❌ Failed to mute user (insufficient permissions)"
     elif warning_count >= 5:
         # 1 day mute
-        await apply_mute(user, interaction.guild, 1, f"{warning_count} warnings")
-        punishment_message = "\n🔇 **1-DAY MUTE** applied automatically!"
+        success = await apply_mute(user, interaction.guild, 1, f"{warning_count} warnings")
+        if success:
+            punishment_message = "\n🔇 **1-DAY MUTE** applied automatically!"
+        else:
+            punishment_message = "\n❌ Failed to mute user (insufficient permissions)"
 
     embed.description += punishment_message
 
@@ -652,6 +908,9 @@ async def warn_user(interaction: discord.Interaction, user: discord.Member, reas
         await user.send(embed=dm_embed)
     except discord.Forbidden:
         pass  # User has DMs disabled
+
+    # Save data
+    await save_data()
 
     await interaction.response.send_message(embed=embed)
 
@@ -737,6 +996,9 @@ async def clear_warnings(interaction: discord.Interaction, user: discord.Member)
         color=0x00ff00
     )
 
+    # Save data
+    await save_data()
+
     await interaction.response.send_message(embed=embed)
 
 @bot.tree.command(name="removewarning", description="Remove a specific warning by ID")
@@ -780,6 +1042,9 @@ async def remove_warning(interaction: discord.Interaction, user: discord.Member,
         color=0x00ff00
     )
 
+    # Save data
+    await save_data()
+
     await interaction.response.send_message(embed=embed)
 
 @bot.tree.command(name="unmute", description="Remove mute from a user")
@@ -814,6 +1079,9 @@ async def unmute_user(interaction: discord.Interaction, user: discord.Member):
                        f"**Unmuted by:** {interaction.user.mention}",
             color=0x00ff00
         )
+
+        # Save data
+        await save_data()
 
         await interaction.response.send_message(embed=embed)
 
@@ -864,6 +1132,9 @@ async def unban_user(interaction: discord.Interaction, user_id: str):
             color=0x00ff00
         )
 
+        # Save data
+        await save_data()
+
         await interaction.response.send_message(embed=embed)
 
         # Try to send DM to unbanned user
@@ -904,6 +1175,10 @@ async def apply_mute(user: discord.Member, guild: discord.Guild, days: int, reas
 
         # Schedule unmute
         asyncio.create_task(schedule_unmute(user.id, guild.id, days * 24 * 3600))
+        
+        # Save data
+        await save_data()
+        
         return True
     except discord.Forbidden:
         return False
@@ -912,7 +1187,14 @@ async def schedule_unmute(user_id: int, guild_id: int, delay_seconds: float):
     """Schedule automatic unmute"""
     await asyncio.sleep(delay_seconds)
 
-    guild = bot.get_guild(guild_id)
+    guild = bot.get_guild(guild_id) if guild_id else None
+    if not guild:
+        # Try to find guild from active punishments
+        for g in bot.guilds:
+            if g.get_member(user_id):
+                guild = g
+                break
+    
     if not guild:
         return
 
@@ -928,6 +1210,9 @@ async def schedule_unmute(user_id: int, guild_id: int, delay_seconds: float):
             # Remove from active punishments
             if user_id in active_punishments:
                 del active_punishments[user_id]
+
+            # Save data
+            await save_data()
 
             # Send DM notification
             try:
@@ -946,7 +1231,12 @@ async def schedule_unban(user_id: int, guild_id: int, delay_seconds: float):
     """Schedule automatic unban"""
     await asyncio.sleep(delay_seconds)
 
-    guild = bot.get_guild(guild_id)
+    guild = bot.get_guild(guild_id) if guild_id else None
+    if not guild:
+        # Try to find guild from bot's guilds
+        if bot.guilds:
+            guild = bot.guilds[0]  # Use first available guild
+    
     if not guild:
         return
 
@@ -956,6 +1246,10 @@ async def schedule_unban(user_id: int, guild_id: int, delay_seconds: float):
         # Remove from active punishments
         if user_id in active_punishments:
             del active_punishments[user_id]
+
+        # Save data
+        await save_data()
+        
     except discord.Forbidden:
         pass
     except discord.NotFound:
@@ -984,7 +1278,7 @@ async def on_message(message):
         base_xp += random.randint(5, 15)
 
     # Add XP and check for level up
-    level_up, xp_gained = add_xp(user_id, base_xp, message.author)
+    level_up, xp_gained = await add_xp(user_id, base_xp, message.author)
 
     if level_up:
         # User leveled up!
@@ -1007,8 +1301,10 @@ async def on_message(message):
                              f"**XP Multiplier:** {progress['multiplier']:.2f}x",
                        inline=True)
 
-        # Check for milestone rewards
+        # Check for milestone rewards and level perks
         milestone_message = ""
+        perk_unlocked = ""
+        
         if level_up == 35:
             milestone_message = "\n🌟 **MILESTONE REACHED!** You now earn **1.10x XP**!"
         elif level_up == 50:
@@ -1016,8 +1312,13 @@ async def on_message(message):
         elif level_up == 80:
             milestone_message = "\n🌟 **MILESTONE REACHED!** You now earn **1.30x XP**!"
 
-        if milestone_message:
-            embed.description += milestone_message
+        # Show level perk unlocked
+        if level_up in LEVEL_PERK_ROLES:
+            role = message.guild.get_role(LEVEL_PERK_ROLES[level_up])
+            if role:
+                perk_unlocked = f"\n🎁 **PERK UNLOCKED!** You received the **{role.name}** role!"
+
+        embed.description += milestone_message + perk_unlocked
 
         embed.set_thumbnail(url=message.author.avatar.url if message.author.avatar else message.author.default_avatar.url)
 
@@ -1035,8 +1336,11 @@ async def on_member_update(before, after):
 
         # Give Server Booster role if they don't have it
         if server_booster_role and server_booster_role not in after.roles:
-            await after.add_roles(server_booster_role)
-            print(f"Added Server Booster role to {after.name}")
+            try:
+                await after.add_roles(server_booster_role)
+                print(f"Added Server Booster role to {after.name}")
+            except discord.Forbidden:
+                print(f"Failed to add Server Booster role to {after.name} - missing permissions")
 
     # Check if someone stopped boosting
     elif before.premium_since is not None and after.premium_since is None:
@@ -1051,9 +1355,11 @@ async def on_member_update(before, after):
         # Remove all booster roles they have
         roles_to_remove = [role for role in booster_roles if role and role in after.roles]
         if roles_to_remove:
-            await after.remove_roles(*roles_to_remove)
-            print(f"Removed booster roles from {after.name}: {[role.name for role in roles_to_remove]}")
-
+            try:
+                await after.remove_roles(*roles_to_remove)
+                print(f"Removed booster roles from {after.name}: {[role.name for role in roles_to_remove]}")
+            except discord.Forbidden:
+                print(f"Failed to remove booster roles from {after.name} - missing permissions")
 
 # Additional fun features
 import time
@@ -1228,7 +1534,10 @@ async def create_poll(interaction: discord.Interaction, question: str, option1: 
 
     # Add reactions
     for i in range(len(options)):
-        await poll_message.add_reaction(number_emojis[i])
+        try:
+            await poll_message.add_reaction(number_emojis[i])
+        except discord.Forbidden:
+            pass
 
 @bot.tree.command(name="remind", description="Set a reminder for yourself")
 @app_commands.describe(
@@ -1430,20 +1739,21 @@ async def check_level(interaction: discord.Interaction, user: discord.Member = N
         inline=False
     )
 
-    # Show next milestones
-    milestones = []
+    # Show next level perks instead of just milestones
+    upcoming_perks = []
     current_level = progress['level']
-    if current_level < 35:
-        milestones.append("Level 35: 10% XP Boost")
-    if current_level < 50:
-        milestones.append("Level 50: 20% XP Boost")
-    if current_level < 80:
-        milestones.append("Level 80: 30% XP Boost")
+    for perk_level in sorted(LEVEL_PERK_ROLES.keys()):
+        if perk_level > current_level:
+            role = interaction.guild.get_role(LEVEL_PERK_ROLES[perk_level])
+            if role:
+                upcoming_perks.append(f"Level {perk_level}: {role.name}")
+                if len(upcoming_perks) >= 3:  # Show next 3 perks
+                    break
 
-    if milestones:
+    if upcoming_perks:
         embed.add_field(
-            name="🎯 Next Milestones",
-            value="\n".join(milestones),
+            name="🎁 Upcoming Level Perks",
+            value="\n".join(upcoming_perks),
             inline=False
         )
 
@@ -1559,6 +1869,10 @@ async def give_xp(interaction: discord.Interaction, user: discord.Member, amount
 
     user_levels[user.id]['level'] = new_level
 
+    # Assign level perk roles if leveled up
+    if new_level > old_level:
+        await assign_level_perk_roles(user, new_level, old_level)
+
     embed = discord.Embed(
         title="✅ XP Given",
         description=f"**{user.mention}** received **{amount:,} XP**!",
@@ -1577,11 +1891,29 @@ async def give_xp(interaction: discord.Interaction, user: discord.Member, amount
         inline=False
     )
 
+    # Save data
+    await save_data()
+
     await interaction.response.send_message(embed=embed)
+
+# Auto-save data every 5 minutes
+async def auto_save():
+    while True:
+        await asyncio.sleep(300)  # 5 minutes
+        await save_data()
+
+@bot.event
+async def on_disconnect():
+    """Save data when bot disconnects"""
+    await save_data()
 
 if TOKEN is None:
     print("Error: TOKEN environment variable not found!")
     exit(1)
 
 keep_alive()
+
+# Start auto-save task
+asyncio.create_task(auto_save())
+
 bot.run(TOKEN)
