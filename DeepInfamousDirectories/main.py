@@ -1,4 +1,4 @@
-
+# Removing aiofiles dependency and updating save_data calls to be synchronous.
 import discord
 from discord.ext import commands
 from discord import app_commands
@@ -9,7 +9,6 @@ from threading import Thread
 import asyncio
 import random
 import json
-import aiofiles
 from datetime import datetime, timedelta
 import re
 import uuid
@@ -81,7 +80,7 @@ LEVEL_PERK_GIVEAWAY_BONUSES = {
 # XP processing lock to prevent race conditions
 xp_locks = {}
 
-async def save_data():
+def save_data():
     """Save all data to files"""
     try:
         # Convert datetime objects for JSON serialization
@@ -121,17 +120,17 @@ async def save_data():
             }
 
         # Save to files
-        async with aiofiles.open(LEVELS_FILE, 'w') as f:
-            await f.write(json.dumps(levels_data, indent=2))
-        
-        async with aiofiles.open(WARNINGS_FILE, 'w') as f:
-            await f.write(json.dumps(warnings_data, indent=2))
-            
-        async with aiofiles.open(PUNISHMENTS_FILE, 'w') as f:
-            await f.write(json.dumps(punishments_data, indent=2))
-            
-        async with aiofiles.open(GIVEAWAYS_FILE, 'w') as f:
-            await f.write(json.dumps(giveaways_data, indent=2))
+        with open(LEVELS_FILE, 'w') as f:
+            json.dump(levels_data, indent=2)
+
+        with open(WARNINGS_FILE, 'w') as f:
+            json.dump(warnings_data, indent=2)
+
+        with open(PUNISHMENTS_FILE, 'w') as f:
+            json.dump(punishments_data, indent=2)
+
+        with open(GIVEAWAYS_FILE, 'w') as f:
+            json.dump(giveaways_data, indent=2)
 
     except Exception as e:
         logging.error(f"Error saving data: {e}")
@@ -139,12 +138,12 @@ async def save_data():
 async def load_data():
     """Load all data from files"""
     global user_levels, user_warnings, active_punishments, active_giveaways
-    
+
     try:
         # Load levels
         if os.path.exists(LEVELS_FILE):
-            async with aiofiles.open(LEVELS_FILE, 'r') as f:
-                data = json.loads(await f.read())
+            with open(LEVELS_FILE, 'r') as f:
+                data = json.loads(f.read())
                 user_levels = {}
                 for user_id_str, level_data in data.items():
                     user_levels[int(user_id_str)] = {
@@ -155,8 +154,8 @@ async def load_data():
 
         # Load warnings
         if os.path.exists(WARNINGS_FILE):
-            async with aiofiles.open(WARNINGS_FILE, 'r') as f:
-                data = json.loads(await f.read())
+            with open(WARNINGS_FILE, 'r') as f:
+                data = json.loads(f.read())
                 user_warnings = {}
                 for user_id_str, warning_data in data.items():
                     user_warnings[int(user_id_str)] = {
@@ -171,13 +170,13 @@ async def load_data():
 
         # Load punishments
         if os.path.exists(PUNISHMENTS_FILE):
-            async with aiofiles.open(PUNISHMENTS_FILE, 'r') as f:
-                data = json.loads(await f.read())
+            with open(PUNISHMENTS_FILE, 'r') as f:
+                data = json.loads(f.read())
                 active_punishments = {}
                 for user_id_str, punishment_data in data.items():
                     user_id = int(user_id_str)
                     until_date = datetime.fromisoformat(punishment_data['until'])
-                    
+
                     # Only load if punishment hasn't expired
                     if until_date > datetime.utcnow():
                         active_punishments[user_id] = {
@@ -185,7 +184,7 @@ async def load_data():
                             'until': until_date,
                             'reason': punishment_data['reason']
                         }
-                        
+
                         # Reschedule the punishment end
                         remaining_seconds = (until_date - datetime.utcnow()).total_seconds()
                         if punishment_data['type'] == 'mute':
@@ -195,18 +194,18 @@ async def load_data():
 
         # Load giveaways
         if os.path.exists(GIVEAWAYS_FILE):
-            async with aiofiles.open(GIVEAWAYS_FILE, 'r') as f:
-                data = json.loads(await f.read())
+            with open(GIVEAWAYS_FILE, 'r') as f:
+                data = json.loads(f.read())
                 active_giveaways = {}
                 for msg_id_str, giveaway_data in data.items():
                     msg_id = int(msg_id_str)
                     end_time = datetime.fromisoformat(giveaway_data['end_time'])
-                    
+
                     # Only load if giveaway hasn't ended
                     if not giveaway_data.get('ended', False) and end_time > datetime.utcnow():
                         giveaway_data['end_time'] = end_time
                         active_giveaways[msg_id] = giveaway_data
-                        
+
                         # Reschedule giveaway end
                         remaining_seconds = (end_time - datetime.utcnow()).total_seconds()
                         asyncio.create_task(end_giveaway_after_delay(msg_id, remaining_seconds))
@@ -223,10 +222,10 @@ async def assign_level_perk_roles(member: discord.Member, new_level: int, old_le
                 role = member.guild.get_role(role_id)
                 if role and role not in member.roles:
                     roles_to_add.append(role)
-        
+
         if roles_to_add:
             await member.add_roles(*roles_to_add, reason=f"Level perk roles for reaching level {new_level}")
-            
+
     except discord.Forbidden:
         logging.error(f"Missing permissions to assign roles to {member}")
     except Exception as e:
@@ -273,7 +272,7 @@ def get_total_xp_multiplier(member, level):
     """Get total XP multiplier combining level, booster, and perk bonuses"""
     level_multiplier = get_level_xp_multiplier(level)
     booster_multiplier = get_booster_xp_multiplier(member)
-    
+
     # Add level perk XP bonuses
     perk_bonus = 0.0
     for perk_level, bonus in LEVEL_PERK_XP_BONUSES.items():
@@ -307,12 +306,12 @@ def get_giveaway_entry_multiplier(member):
     # Level perk bonuses
     user_level = user_levels.get(member.id, {'level': 1})['level']
     level_bonus = 0
-    
+
     # Get highest applicable level perk bonus
     for perk_level, bonus in LEVEL_PERK_GIVEAWAY_BONUSES.items():
         if user_level >= perk_level:
             level_bonus = max(level_bonus, bonus)
-    
+
     return booster_multiplier + level_bonus
 
 async def add_xp(user_id, base_xp, member):
@@ -320,7 +319,7 @@ async def add_xp(user_id, base_xp, member):
     # Prevent race conditions with per-user locks
     if user_id not in xp_locks:
         xp_locks[user_id] = asyncio.Lock()
-    
+
     async with xp_locks[user_id]:
         try:
             if user_id not in user_levels:
@@ -343,17 +342,17 @@ async def add_xp(user_id, base_xp, member):
 
             if new_level > current_level:
                 user_levels[user_id]['level'] = new_level
-                
+
                 # Assign level perk roles
                 await assign_level_perk_roles(member, new_level, old_level)
-                
+
                 # Save data after level up
-                await save_data()
-                
+                save_data()
+
                 return new_level, xp_gained  # Return new level and XP gained
 
             return None, xp_gained  # No level up, just return XP gained
-            
+
         except Exception as e:
             logging.error(f"Error adding XP to user {user_id}: {e}")
             return None, 0
@@ -374,7 +373,7 @@ def get_level_progress(user_id, member):
     xp_needed_for_level = xp_for_next - xp_for_current
 
     progress_percent = (xp_in_level / xp_needed_for_level) * 100 if xp_needed_for_level > 0 else 100
-    
+
     total_multiplier = get_total_xp_multiplier(member, level)
     booster_multiplier = get_booster_xp_multiplier(member)
 
@@ -406,10 +405,10 @@ def keep_alive():
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user}")
-    
+
     # Load data on startup
     await load_data()
-    
+
     try:
         synced = await bot.tree.sync()
         print(f"Synced {len(synced)} command(s)")
@@ -588,7 +587,7 @@ async def giveaway_slash(
     asyncio.create_task(end_giveaway_after_delay(giveaway_msg.id, parsed_duration.total_seconds()))
 
     # Save data
-    await save_data()
+    save_data()
 
     # Send success message (only visible to command user)
     success_msg = f"✅ Giveaway created successfully in {channel.mention}!"
@@ -631,7 +630,7 @@ async def end_giveaway(giveaway_id):
         )
         await message.edit(embed=embed)
         giveaway['ended'] = True
-        await save_data()
+        save_data()
         return
 
     # Get eligible users
@@ -673,7 +672,7 @@ async def end_giveaway(giveaway_id):
         )
         await message.edit(embed=embed)
         giveaway['ended'] = True
-        await save_data()
+        save_data()
         return
 
     # Select winners
@@ -736,7 +735,7 @@ async def end_giveaway(giveaway_id):
 
     await message.edit(embed=embed)
     giveaway['ended'] = True
-    await save_data()
+    save_data()
 
 @bot.tree.command(name="reroll", description="Reroll a giveaway to select new winners")
 @app_commands.describe(message_id="The message ID of the giveaway to reroll")
@@ -771,7 +770,7 @@ async def force_end_giveaway(interaction: discord.Interaction, message_id: str):
         return
 
     if msg_id not in active_giveaways:
-        await interaction.response.send_message("❌ Giveaway not found!", ephemeral=True)
+        await interaction.response.send_message("❌ Giveaway not found!", ephemeral=True)```python
         return
 
     giveaway = active_giveaways[msg_id]
@@ -910,7 +909,7 @@ async def warn_user(interaction: discord.Interaction, user: discord.Member, reas
         pass  # User has DMs disabled
 
     # Save data
-    await save_data()
+    save_data()
 
     await interaction.response.send_message(embed=embed)
 
@@ -997,7 +996,7 @@ async def clear_warnings(interaction: discord.Interaction, user: discord.Member)
     )
 
     # Save data
-    await save_data()
+    save_data()
 
     await interaction.response.send_message(embed=embed)
 
@@ -1043,7 +1042,7 @@ async def remove_warning(interaction: discord.Interaction, user: discord.Member,
     )
 
     # Save data
-    await save_data()
+    save_data()
 
     await interaction.response.send_message(embed=embed)
 
@@ -1081,7 +1080,7 @@ async def unmute_user(interaction: discord.Interaction, user: discord.Member):
         )
 
         # Save data
-        await save_data()
+        save_data()
 
         await interaction.response.send_message(embed=embed)
 
@@ -1133,7 +1132,7 @@ async def unban_user(interaction: discord.Interaction, user_id: str):
         )
 
         # Save data
-        await save_data()
+        save_data()
 
         await interaction.response.send_message(embed=embed)
 
@@ -1175,10 +1174,10 @@ async def apply_mute(user: discord.Member, guild: discord.Guild, days: int, reas
 
         # Schedule unmute
         asyncio.create_task(schedule_unmute(user.id, guild.id, days * 24 * 3600))
-        
+
         # Save data
-        await save_data()
-        
+        save_data()
+
         return True
     except discord.Forbidden:
         return False
@@ -1194,7 +1193,7 @@ async def schedule_unmute(user_id: int, guild_id: int, delay_seconds: float):
             if g.get_member(user_id):
                 guild = g
                 break
-    
+
     if not guild:
         return
 
@@ -1212,7 +1211,7 @@ async def schedule_unmute(user_id: int, guild_id: int, delay_seconds: float):
                 del active_punishments[user_id]
 
             # Save data
-            await save_data()
+            save_data()
 
             # Send DM notification
             try:
@@ -1236,7 +1235,7 @@ async def schedule_unban(user_id: int, guild_id: int, delay_seconds: float):
         # Try to find guild from bot's guilds
         if bot.guilds:
             guild = bot.guilds[0]  # Use first available guild
-    
+
     if not guild:
         return
 
@@ -1248,8 +1247,8 @@ async def schedule_unban(user_id: int, guild_id: int, delay_seconds: float):
             del active_punishments[user_id]
 
         # Save data
-        await save_data()
-        
+        save_data()
+
     except discord.Forbidden:
         pass
     except discord.NotFound:
@@ -1304,7 +1303,7 @@ async def on_message(message):
         # Check for milestone rewards and level perks
         milestone_message = ""
         perk_unlocked = ""
-        
+
         if level_up == 35:
             milestone_message = "\n🌟 **MILESTONE REACHED!** You now earn **1.10x XP**!"
         elif level_up == 50:
@@ -1501,419 +1500,4 @@ async def rock_paper_scissors(interaction: discord.Interaction, choice: app_comm
 @app_commands.describe(
     question="The poll question",
     option1="First option", option2="Second option", option3="Third option (optional)",
-    option4="Fourth option (optional)", option5="Fifth option (optional)",
-    option6="Sixth option (optional)", option7="Seventh option (optional)",
-    option8="Eighth option (optional)", option9="Ninth option (optional)",
-    option10="Tenth option (optional)"
-)
-async def create_poll(interaction: discord.Interaction, question: str, option1: str, option2: str,
-                     option3: str = None, option4: str = None, option5: str = None,
-                     option6: str = None, option7: str = None, option8: str = None,
-                     option9: str = None, option10: str = None):
-
-    options = [option1, option2, option3, option4, option5, option6, option7, option8, option9, option10]
-    options = [opt for opt in options if opt is not None]
-
-    if len(options) < 2:
-        await interaction.response.send_message("❌ You need at least 2 options for a poll!", ephemeral=True)
-        return
-
-    # Number emojis for reactions
-    number_emojis = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
-
-    embed = discord.Embed(
-        title="📊 Poll",
-        description=f"**{question}**\n\n" + "\n".join([f"{number_emojis[i]} {option}" for i, option in enumerate(options)]),
-        color=0x3498db
-    )
-
-    embed.set_footer(text=f"Poll created by {interaction.user.display_name}")
-
-    poll_message = await interaction.response.send_message(embed=embed)
-    poll_message = await interaction.original_response()
-
-    # Add reactions
-    for i in range(len(options)):
-        try:
-            await poll_message.add_reaction(number_emojis[i])
-        except discord.Forbidden:
-            pass
-
-@bot.tree.command(name="remind", description="Set a reminder for yourself")
-@app_commands.describe(
-    time="Time until reminder (e.g., '5 minutes', '2 hours', '1 day')",
-    message="What to remind you about"
-)
-async def set_reminder(interaction: discord.Interaction, time: str, message: str):
-    duration = parse_duration(time)
-    if not duration:
-        await interaction.response.send_message("❌ Invalid time format! Use format like '5 minutes', '2 hours', '1 day'", ephemeral=True)
-        return
-
-    if duration.total_seconds() > 7 * 24 * 3600:  # Max 7 days
-        await interaction.response.send_message("❌ Reminders can't be longer than 7 days!", ephemeral=True)
-        return
-
-    reminder_time = datetime.utcnow() + duration
-
-    # Store reminder
-    if interaction.user.id not in user_reminders:
-        user_reminders[interaction.user.id] = []
-
-    reminder_data = {
-        'message': message,
-        'time': reminder_time,
-        'channel_id': interaction.channel.id
-    }
-
-    user_reminders[interaction.user.id].append(reminder_data)
-
-    embed = discord.Embed(
-        title="⏰ Reminder Set",
-        description=f"I'll remind you about: **{message}**\n"
-                   f"Time: <t:{int(reminder_time.timestamp())}:F>",
-        color=0x00ff00
-    )
-
-    await interaction.response.send_message(embed=embed, ephemeral=True)
-
-    # Schedule reminder
-    asyncio.create_task(send_reminder(interaction.user.id, reminder_data, duration.total_seconds()))
-
-async def send_reminder(user_id: int, reminder_data: dict, delay_seconds: float):
-    """Send reminder after delay"""
-    await asyncio.sleep(delay_seconds)
-
-    user = bot.get_user(user_id)
-    channel = bot.get_channel(reminder_data['channel_id'])
-
-    if user and channel:
-        embed = discord.Embed(
-            title="⏰ Reminder",
-            description=f"**{reminder_data['message']}**",
-            color=0xff9900
-        )
-
-        try:
-            await channel.send(f"{user.mention}", embed=embed)
-        except discord.Forbidden:
-            # Try DM if can't send in channel
-            try:
-                await user.send(embed=embed)
-            except discord.Forbidden:
-                pass
-
-    # Remove from reminders list
-    if user_id in user_reminders:
-        user_reminders[user_id] = [r for r in user_reminders[user_id] if r != reminder_data]
-
-@bot.tree.command(name="8ball", description="Ask the magic 8-ball a question")
-@app_commands.describe(question="Your yes/no question")
-async def magic_8ball(interaction: discord.Interaction, question: str):
-    responses = [
-        "🔮 It is certain",
-        "🔮 It is decidedly so",
-        "🔮 Without a doubt",
-        "🔮 Yes definitely",
-        "🔮 You may rely on it",
-        "🔮 As I see it, yes",
-        "🔮 Most likely",
-        "🔮 Outlook good",
-        "🔮 Yes",
-        "🔮 Signs point to yes",
-        "🔮 Reply hazy, try again",
-        "🔮 Ask again later",
-        "🔮 Better not tell you now",
-        "🔮 Cannot predict now",
-        "🔮 Concentrate and ask again",
-        "🔮 Don't count on it",
-        "🔮 My reply is no",
-        "🔮 My sources say no",
-        "🔮 Outlook not so good",
-        "🔮 Very doubtful"
-    ]
-
-    response = random.choice(responses)
-
-    embed = discord.Embed(
-        title="🎱 Magic 8-Ball",
-        description=f"**Question:** {question}\n**Answer:** {response}",
-        color=0x800080
-    )
-
-    await interaction.response.send_message(embed=embed)
-
-@bot.tree.command(name="coinflip", description="Flip a coin")
-async def coin_flip(interaction: discord.Interaction):
-    result = random.choice(["Heads", "Tails"])
-    emoji = "🪙" if result == "Heads" else "🥇"
-
-    embed = discord.Embed(
-        title="🪙 Coin Flip",
-        description=f"**Result:** {emoji} {result}!",
-        color=0xffd700
-    )
-
-    await interaction.response.send_message(embed=embed)
-
-@bot.tree.command(name="dice", description="Roll a dice")
-@app_commands.describe(sides="Number of sides on the dice (default: 6)")
-async def roll_dice(interaction: discord.Interaction, sides: int = 6):
-    if sides < 2 or sides > 100:
-        await interaction.response.send_message("❌ Dice must have between 2 and 100 sides!", ephemeral=True)
-        return
-
-    result = random.randint(1, sides)
-
-    embed = discord.Embed(
-        title="🎲 Dice Roll",
-        description=f"**You rolled a {sides}-sided dice**\n**Result:** {result}",
-        color=0xff6b6b
-    )
-
-    await interaction.response.send_message(embed=embed)
-
-@bot.tree.command(name="level", description="Check your or someone else's level and XP")
-@app_commands.describe(user="The user to check (optional - defaults to yourself)")
-async def check_level(interaction: discord.Interaction, user: discord.Member = None):
-    target_user = user or interaction.user
-
-    if target_user.bot:
-        await interaction.response.send_message("❌ Bots don't have levels!", ephemeral=True)
-        return
-
-    progress = get_level_progress(target_user.id, target_user)
-
-    # Create progress bar
-    progress_bar_length = 20
-    filled_length = int(progress_bar_length * progress['progress_percent'] / 100)
-    progress_bar = "█" * filled_length + "░" * (progress_bar_length - filled_length)
-
-    embed = discord.Embed(
-        title=f"📈 Level Stats for {target_user.display_name}",
-        color=target_user.color if target_user.color.value != 0 else 0x7289da
-    )
-
-    embed.set_thumbnail(url=target_user.avatar.url if target_user.avatar else target_user.default_avatar.url)
-
-    # Show booster info if applicable
-    booster_text = ""
-    if progress['booster_multiplier'] > 1.0:
-        booster_bonus = int((progress['booster_multiplier'] - 1.0) * 100)
-        giveaway_multiplier = get_giveaway_entry_multiplier(target_user)
-
-        # Determine booster tier
-        guild = target_user.guild
-        mega_booster_role = guild.get_role(1397371634012258374)
-        super_booster_role = guild.get_role(1397371603255296181)
-        server_booster_role = guild.get_role(1397361697324269679)
-
-        tier = ""
-        if mega_booster_role and mega_booster_role in target_user.roles:
-            tier = "💎 Mega Booster"
-        elif super_booster_role and super_booster_role in target_user.roles:
-            tier = "💎 Super Booster"
-        elif server_booster_role and server_booster_role in target_user.roles:
-            tier = "💎 Server Booster"
-
-        booster_text = f"\n{tier}\n🚀 +{booster_bonus}% XP Boost\n🎟️ {giveaway_multiplier}x Giveaway Entries"
-
-    embed.add_field(
-        name="📊 Current Level",
-        value=f"**Level {progress['level']}**\n"
-              f"XP Multiplier: **{progress['multiplier']:.2f}x**{booster_text}",
-        inline=True
-    )
-
-    embed.add_field(
-        name="⭐ Experience Points",
-        value=f"**{progress['current_xp']:,}** total XP\n"
-              f"**{progress['xp_in_level']:,}** / **{progress['xp_needed_for_level']:,}** XP",
-        inline=True
-    )
-
-    embed.add_field(
-        name="📈 Progress to Next Level",
-        value=f"`{progress_bar}` {progress['progress_percent']:.1f}%\n"
-              f"**{progress['xp_needed_for_level'] - progress['xp_in_level']:,}** XP needed",
-        inline=False
-    )
-
-    # Show next level perks instead of just milestones
-    upcoming_perks = []
-    current_level = progress['level']
-    for perk_level in sorted(LEVEL_PERK_ROLES.keys()):
-        if perk_level > current_level:
-            role = interaction.guild.get_role(LEVEL_PERK_ROLES[perk_level])
-            if role:
-                upcoming_perks.append(f"Level {perk_level}: {role.name}")
-                if len(upcoming_perks) >= 3:  # Show next 3 perks
-                    break
-
-    if upcoming_perks:
-        embed.add_field(
-            name="🎁 Upcoming Level Perks",
-            value="\n".join(upcoming_perks),
-            inline=False
-        )
-
-    await interaction.response.send_message(embed=embed)
-
-@bot.tree.command(name="leaderboard", description="Show the server XP leaderboard")
-async def show_leaderboard(interaction: discord.Interaction):
-    guild = interaction.guild
-
-    # Get all users with levels in this server
-    guild_members = {member.id: member for member in guild.members if not member.bot}
-
-    # Filter user_levels to only include current guild members
-    guild_user_levels = {
-        user_id: data for user_id, data in user_levels.items() 
-        if user_id in guild_members
-    }
-
-    if not guild_user_levels:
-        embed = discord.Embed(
-            title="📊 XP Leaderboard",
-            description="No one has gained XP yet! Start chatting to earn XP!",
-            color=0x7289da
-        )
-        await interaction.response.send_message(embed=embed)
-        return
-
-    # Sort by XP (descending)
-    sorted_users = sorted(guild_user_levels.items(), key=lambda x: x[1]['xp'], reverse=True)
-
-    embed = discord.Embed(
-        title="🏆 XP Leaderboard",
-        description=f"Top users in {guild.name}",
-        color=0xffd700
-    )
-
-    # Show top 10 users
-    leaderboard_text = ""
-    for i, (user_id, data) in enumerate(sorted_users[:10], 1):
-        user = guild_members.get(user_id)
-        if not user:
-            continue
-
-        # Get rank emoji
-        if i == 1:
-            rank_emoji = "🥇"
-        elif i == 2:
-            rank_emoji = "🥈"
-        elif i == 3:
-            rank_emoji = "🥉"
-        else:
-            rank_emoji = f"`{i:2d}.`"
-
-        level = data['level']
-        xp = data['xp']
-        multiplier = get_total_xp_multiplier(user,level)
-
-        leaderboard_text += f"{rank_emoji} **{user.display_name}**\n"
-        leaderboard_text += f"     Level {level} • {xp:,} XP • {multiplier:.2f}x\n\n"
-
-    embed.description += f"\n\n{leaderboard_text}"
-
-    # Show user's rank if not in top 10
-    user_rank = None
-    for i, (user_id, data) in enumerate(sorted_users, 1):
-        if user_id == interaction.user.id:
-            user_rank = i
-            break
-
-    if user_rank and user_rank > 10:
-        user_data = user_levels.get(interaction.user.id, {'level': 1, 'xp': 0})
-        embed.add_field(
-            name="Your Rank",
-            value=f"**#{user_rank}** - Level {user_data['level']} ({user_data['xp']:,} XP)",
-            inline=False
-        )
-
-    await interaction.response.send_message(embed=embed)
-
-@bot.tree.command(name="givexp", description="Give XP to a user (Admin only)")
-@app_commands.describe(
-    user="The user to give XP to",
-    amount="Amount of XP to give"
-)
-async def give_xp(interaction: discord.Interaction, user: discord.Member, amount: int):
-    # Check if user has administrator permission
-    if not interaction.user.guild_permissions.administrator:
-        await interaction.response.send_message("❌ You need administrator permission to give XP!", ephemeral=True)
-        return
-
-    if user.bot:
-        await interaction.response.send_message("❌ You can't give XP to bots!", ephemeral=True)
-        return
-
-    if amount <= 0 or amount > 100000:
-        await interaction.response.send_message("❌ XP amount must be between 1 and 100,000!", ephemeral=True)
-        return
-
-    # Add XP (without multiplier for admin commands)
-    if user.id not in user_levels:
-        user_levels[user.id] = {'xp': 0, 'level': 1, 'last_message': datetime.utcnow()}
-
-    old_level = user_levels[user.id]['level']
-    user_levels[user.id]['xp'] += amount
-    user_levels[user.id]['last_message'] = datetime.utcnow()
-
-    # Check for level up
-    current_xp = user_levels[user.id]['xp']
-    new_level = old_level
-
-    while current_xp >= calculate_xp_for_level(new_level + 1):
-        new_level += 1
-
-    user_levels[user.id]['level'] = new_level
-
-    # Assign level perk roles if leveled up
-    if new_level > old_level:
-        await assign_level_perk_roles(user, new_level, old_level)
-
-    embed = discord.Embed(
-        title="✅ XP Given",
-        description=f"**{user.mention}** received **{amount:,} XP**!",
-        color=0x00ff00
-    )
-
-    if new_level > old_level:
-        embed.description += f"\n🎉 They leveled up from **Level {old_level}** to **Level {new_level}**!"
-
-    progress = get_level_progress(user.id, user)
-    embed.add_field(
-        name="📊 New Stats",
-        value=f"Level: **{progress['level']}**\n"
-              f"Total XP: **{progress['current_xp']:,}**\n"
-              f"Multiplier: **{progress['multiplier']:.2f}x**",
-        inline=False
-    )
-
-    # Save data
-    await save_data()
-
-    await interaction.response.send_message(embed=embed)
-
-# Auto-save data every 5 minutes
-async def auto_save():
-    while True:
-        await asyncio.sleep(300)  # 5 minutes
-        await save_data()
-
-@bot.event
-async def on_disconnect():
-    """Save data when bot disconnects"""
-    await save_data()
-
-if TOKEN is None:
-    print("Error: TOKEN environment variable not found!")
-    exit(1)
-
-keep_alive()
-
-# Start auto-save task
-asyncio.create_task(auto_save())
-
-bot.run(TOKEN)
+    option4="Fourth option (optional)", option
