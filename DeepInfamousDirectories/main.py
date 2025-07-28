@@ -14,6 +14,9 @@ import re
 import uuid
 import logging
 
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+
 load_dotenv()
 TOKEN = os.getenv("TOKEN")
 
@@ -82,6 +85,8 @@ xp_locks = {}
 
 def save_data():
     """Save all data to files"""
+    global user_levels, user_warnings, active_punishments, active_giveaways
+    
     try:
         # Convert datetime objects for JSON serialization
         levels_data = {}
@@ -138,6 +143,12 @@ def save_data():
 async def load_data():
     """Load all data from files"""
     global user_levels, user_warnings, active_punishments, active_giveaways
+    
+    # Initialize empty dictionaries if they don't exist
+    user_levels = user_levels if 'user_levels' in globals() else {}
+    user_warnings = user_warnings if 'user_warnings' in globals() else {}
+    active_punishments = active_punishments if 'active_punishments' in globals() else {}
+    active_giveaways = active_giveaways if 'active_giveaways' in globals() else {}
 
     try:
         # Load levels
@@ -316,6 +327,8 @@ def get_giveaway_entry_multiplier(member):
 
 async def add_xp(user_id, base_xp, member):
     """Add XP to a user with level and booster multipliers - thread safe"""
+    global user_levels, xp_locks
+    
     # Prevent race conditions with per-user locks
     if user_id not in xp_locks:
         xp_locks[user_id] = asyncio.Lock()
@@ -359,8 +372,20 @@ async def add_xp(user_id, base_xp, member):
 
 def get_level_progress(user_id, member):
     """Get user's level progress information, including booster bonuses"""
+    global user_levels
+    
     if user_id not in user_levels:
-        return {'level': 1, 'current_xp': 0, 'xp_for_current': 0, 'xp_for_next': calculate_xp_for_level(2), 'progress_percent': 0, 'multiplier': 1.0, 'booster_multiplier': 1.0}
+        return {
+            'level': 1, 
+            'current_xp': 0, 
+            'xp_for_current': 0, 
+            'xp_for_next': calculate_xp_for_level(2), 
+            'progress_percent': 0, 
+            'multiplier': 1.0, 
+            'booster_multiplier': 1.0,
+            'xp_in_level': 0,
+            'xp_needed_for_level': calculate_xp_for_level(2)
+        }
 
     user_data = user_levels[user_id]
     level = user_data['level']
@@ -593,11 +618,6 @@ async def giveaway_slash(
     success_msg = f"✅ Giveaway created successfully in {channel.mention}!"
 
     await interaction.response.send_message(success_msg, ephemeral=True)
-
-async def end_giveaway_after_delay(giveaway_id, delay_seconds):
-    """End giveaway after specified delay"""
-    await asyncio.sleep(delay_seconds)
-    await end_giveaway(giveaway_id)
 
 async def end_giveaway(giveaway_id):
     """End a giveaway and select winners"""
@@ -1366,6 +1386,12 @@ import time
 # Storage for polls and reminders
 active_polls = {}
 user_reminders = {}
+
+# Fix undefined variables
+async def end_giveaway_after_delay(giveaway_id, delay_seconds):
+    """End giveaway after specified delay"""
+    await asyncio.sleep(delay_seconds)
+    await end_giveaway(giveaway_id)
 
 @bot.tree.command(name="userinfo", description="Get detailed information about a user")
 @app_commands.describe(user="The user to get info about (optional - defaults to yourself)")
