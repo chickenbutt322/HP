@@ -121,16 +121,16 @@ def save_data():
 
         # Save to files
         with open(LEVELS_FILE, 'w') as f:
-            json.dump(levels_data, indent=2)
+            json.dump(levels_data, f, indent=2)
 
         with open(WARNINGS_FILE, 'w') as f:
-            json.dump(warnings_data, indent=2)
+            json.dump(warnings_data, f, indent=2)
 
         with open(PUNISHMENTS_FILE, 'w') as f:
-            json.dump(punishments_data, indent=2)
+            json.dump(punishments_data, f, indent=2)
 
         with open(GIVEAWAYS_FILE, 'w') as f:
-            json.dump(giveaways_data, indent=2)
+            json.dump(giveaways_data, f, indent=2)
 
     except Exception as e:
         logging.error(f"Error saving data: {e}")
@@ -770,7 +770,7 @@ async def force_end_giveaway(interaction: discord.Interaction, message_id: str):
         return
 
     if msg_id not in active_giveaways:
-        await interaction.response.send_message("❌ Giveaway not found!", ephemeral=True)```python
+        await interaction.response.send_message("❌ Giveaway not found!", ephemeral=True)
         return
 
     giveaway = active_giveaways[msg_id]
@@ -1499,5 +1499,119 @@ async def rock_paper_scissors(interaction: discord.Interaction, choice: app_comm
 @bot.tree.command(name="poll", description="Create a poll with up to 10 options")
 @app_commands.describe(
     question="The poll question",
-    option1="First option", option2="Second option", option3="Third option (optional)",
-    option4="Fourth option (optional)", option
+    option1="First option", 
+    option2="Second option", 
+    option3="Third option (optional)",
+    option4="Fourth option (optional)",
+    option5="Fifth option (optional)"
+)
+async def create_poll(
+    interaction: discord.Interaction,
+    question: str,
+    option1: str,
+    option2: str,
+    option3: str = None,
+    option4: str = None,
+    option5: str = None
+):
+    options = [option1, option2]
+    if option3: options.append(option3)
+    if option4: options.append(option4)
+    if option5: options.append(option5)
+    
+    if len(options) > 10:
+        await interaction.response.send_message("❌ Maximum 10 options allowed!", ephemeral=True)
+        return
+
+    # Number emojis for reactions
+    number_emojis = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
+    
+    embed = discord.Embed(
+        title="📊 Poll",
+        description=f"**{question}**\n\n" + "\n".join([f"{number_emojis[i]} {option}" for i, option in enumerate(options)]),
+        color=0x00ff00
+    )
+    embed.set_footer(text=f"Poll created by {interaction.user.display_name}")
+    
+    message = await interaction.response.send_message(embed=embed)
+    poll_message = await interaction.original_response()
+    
+    # Add reactions
+    for i in range(len(options)):
+        await poll_message.add_reaction(number_emojis[i])
+
+@bot.tree.command(name="level", description="Check your or someone else's level and XP")
+@app_commands.describe(user="User to check level for (optional)")
+async def check_level(interaction: discord.Interaction, user: discord.Member = None):
+    target_user = user or interaction.user
+    progress = get_level_progress(target_user.id, target_user)
+    
+    embed = discord.Embed(
+        title=f"📊 Level Stats for {target_user.display_name}",
+        color=target_user.color if target_user.color.value != 0 else 0x7289da
+    )
+    
+    embed.add_field(name="📈 Level", value=f"**{progress['level']}**", inline=True)
+    embed.add_field(name="✨ Total XP", value=f"**{progress['current_xp']:,}**", inline=True)
+    embed.add_field(name="🚀 XP Multiplier", value=f"**{progress['multiplier']:.2f}x**", inline=True)
+    
+    # Progress bar
+    progress_bar = "▓" * int(progress['progress_percent'] / 10) + "░" * (10 - int(progress['progress_percent'] / 10))
+    embed.add_field(
+        name="📊 Progress to Next Level",
+        value=f"```{progress_bar} {progress['progress_percent']:.1f}%```\n"
+              f"**{progress['xp_in_level']:,}** / **{progress['xp_needed_for_level']:,}** XP",
+        inline=False
+    )
+    
+    if progress['booster_multiplier'] > 1.0:
+        booster_bonus = int((progress['booster_multiplier'] - 1.0) * 100)
+        embed.add_field(name="💎 Booster Bonus", value=f"**+{booster_bonus}% XP**", inline=True)
+    
+    embed.set_thumbnail(url=target_user.avatar.url if target_user.avatar else target_user.default_avatar.url)
+    
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="leaderboard", description="Show the server XP leaderboard")
+async def leaderboard(interaction: discord.Interaction):
+    if not user_levels:
+        await interaction.response.send_message("❌ No one has earned XP yet!", ephemeral=True)
+        return
+    
+    # Sort users by XP
+    sorted_users = sorted(user_levels.items(), key=lambda x: x[1]['xp'], reverse=True)
+    
+    embed = discord.Embed(
+        title="🏆 XP Leaderboard",
+        color=0xffd700
+    )
+    
+    leaderboard_text = ""
+    for i, (user_id, data) in enumerate(sorted_users[:10]):  # Top 10
+        user = interaction.guild.get_member(user_id)
+        if user:
+            medal = "🥇" if i == 0 else "🥈" if i == 1 else "🥉" if i == 2 else f"#{i+1}"
+            leaderboard_text += f"{medal} **{user.display_name}** - Level {data['level']} ({data['xp']:,} XP)\n"
+    
+    embed.description = leaderboard_text or "No users found!"
+    
+    await interaction.response.send_message(embed=embed)
+
+# Error handling for missing commands
+@bot.event
+async def on_command_error(ctx, error):
+    if isinstance(error, commands.CommandNotFound):
+        return  # Ignore command not found errors
+    
+    logging.error(f"Command error: {error}")
+
+# Keep alive function for hosting
+keep_alive()
+
+# Run the bot
+if __name__ == "__main__":
+    try:
+        bot.run(TOKEN)
+    except Exception as e:
+        logging.error(f"Bot failed to start: {e}")
+        print(f"Error starting bot: {e}")
