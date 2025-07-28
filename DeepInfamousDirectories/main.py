@@ -13,6 +13,7 @@ from datetime import datetime, timedelta
 import re
 import uuid
 import logging
+import time
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -154,72 +155,80 @@ async def load_data():
         # Load levels
         if os.path.exists(LEVELS_FILE):
             with open(LEVELS_FILE, 'r') as f:
-                data = json.loads(f.read())
-                user_levels = {}
-                for user_id_str, level_data in data.items():
-                    user_levels[int(user_id_str)] = {
-                        'xp': level_data['xp'],
-                        'level': level_data['level'],
-                        'last_message': datetime.fromisoformat(level_data['last_message'])
-                    }
+                file_content = f.read().strip()
+                if file_content:
+                    data = json.loads(file_content)
+                    user_levels = {}
+                    for user_id_str, level_data in data.items():
+                        user_levels[int(user_id_str)] = {
+                            'xp': level_data['xp'],
+                            'level': level_data['level'],
+                            'last_message': datetime.fromisoformat(level_data['last_message'])
+                        }
 
         # Load warnings
         if os.path.exists(WARNINGS_FILE):
             with open(WARNINGS_FILE, 'r') as f:
-                data = json.loads(f.read())
-                user_warnings = {}
-                for user_id_str, warning_data in data.items():
-                    user_warnings[int(user_id_str)] = {
-                        'warnings': warning_data['warnings'],
-                        'history': [{
-                            'id': h['id'],
-                            'reason': h['reason'],
-                            'date': datetime.fromisoformat(h['date']),
-                            'moderator': h['moderator']
-                        } for h in warning_data['history']]
-                    }
+                file_content = f.read().strip()
+                if file_content:
+                    data = json.loads(file_content)
+                    user_warnings = {}
+                    for user_id_str, warning_data in data.items():
+                        user_warnings[int(user_id_str)] = {
+                            'warnings': warning_data['warnings'],
+                            'history': [{
+                                'id': h['id'],
+                                'reason': h['reason'],
+                                'date': datetime.fromisoformat(h['date']),
+                                'moderator': h['moderator']
+                            } for h in warning_data['history']]
+                        }
 
         # Load punishments
         if os.path.exists(PUNISHMENTS_FILE):
             with open(PUNISHMENTS_FILE, 'r') as f:
-                data = json.loads(f.read())
-                active_punishments = {}
-                for user_id_str, punishment_data in data.items():
-                    user_id = int(user_id_str)
-                    until_date = datetime.fromisoformat(punishment_data['until'])
+                file_content = f.read().strip()
+                if file_content:
+                    data = json.loads(file_content)
+                    active_punishments = {}
+                    for user_id_str, punishment_data in data.items():
+                        user_id = int(user_id_str)
+                        until_date = datetime.fromisoformat(punishment_data['until'])
 
-                    # Only load if punishment hasn't expired
-                    if until_date > datetime.utcnow():
-                        active_punishments[user_id] = {
-                            'type': punishment_data['type'],
-                            'until': until_date,
-                            'reason': punishment_data['reason']
-                        }
+                        # Only load if punishment hasn't expired
+                        if until_date > datetime.utcnow():
+                            active_punishments[user_id] = {
+                                'type': punishment_data['type'],
+                                'until': until_date,
+                                'reason': punishment_data['reason']
+                            }
 
-                        # Reschedule the punishment end
-                        remaining_seconds = (until_date - datetime.utcnow()).total_seconds()
-                        if punishment_data['type'] == 'mute':
-                            asyncio.create_task(schedule_unmute(user_id, None, remaining_seconds))
-                        elif punishment_data['type'] == 'tempban':
-                            asyncio.create_task(schedule_unban(user_id, None, remaining_seconds))
+                            # Reschedule the punishment end
+                            remaining_seconds = (until_date - datetime.utcnow()).total_seconds()
+                            if punishment_data['type'] == 'mute':
+                                asyncio.create_task(schedule_unmute(user_id, None, remaining_seconds))
+                            elif punishment_data['type'] == 'tempban':
+                                asyncio.create_task(schedule_unban(user_id, None, remaining_seconds))
 
         # Load giveaways
         if os.path.exists(GIVEAWAYS_FILE):
             with open(GIVEAWAYS_FILE, 'r') as f:
-                data = json.loads(f.read())
-                active_giveaways = {}
-                for msg_id_str, giveaway_data in data.items():
-                    msg_id = int(msg_id_str)
-                    end_time = datetime.fromisoformat(giveaway_data['end_time'])
+                file_content = f.read().strip()
+                if file_content:
+                    data = json.loads(file_content)
+                    active_giveaways = {}
+                    for msg_id_str, giveaway_data in data.items():
+                        msg_id = int(msg_id_str)
+                        end_time = datetime.fromisoformat(giveaway_data['end_time'])
 
-                    # Only load if giveaway hasn't ended
-                    if not giveaway_data.get('ended', False) and end_time > datetime.utcnow():
-                        giveaway_data['end_time'] = end_time
-                        active_giveaways[msg_id] = giveaway_data
+                        # Only load if giveaway hasn't ended
+                        if not giveaway_data.get('ended', False) and end_time > datetime.utcnow():
+                            giveaway_data['end_time'] = end_time
+                            active_giveaways[msg_id] = giveaway_data
 
-                        # Reschedule giveaway end
-                        remaining_seconds = (end_time - datetime.utcnow()).total_seconds()
-                        asyncio.create_task(end_giveaway_after_delay(msg_id, remaining_seconds))
+                            # Reschedule giveaway end
+                            remaining_seconds = (end_time - datetime.utcnow()).total_seconds()
+                            asyncio.create_task(end_giveaway_after_delay(msg_id, remaining_seconds))
 
     except Exception as e:
         logging.error(f"Error loading data: {e}")
@@ -1381,11 +1390,21 @@ async def on_member_update(before, after):
                 print(f"Failed to remove booster roles from {after.name} - missing permissions")
 
 # Additional fun features
-import time
-
-# Storage for polls and reminders
+# Storage for polls and reminders  
 active_polls = {}
 user_reminders = {}
+
+# Initialize global variables if not already defined
+if 'user_levels' not in globals():
+    user_levels = {}
+if 'user_warnings' not in globals():
+    user_warnings = {}
+if 'active_punishments' not in globals():
+    active_punishments = {}
+if 'active_giveaways' not in globals():
+    active_giveaways = {}
+if 'xp_locks' not in globals():
+    xp_locks = {}
 
 # Fix undefined variables
 async def end_giveaway_after_delay(giveaway_id, delay_seconds):
@@ -1624,12 +1643,21 @@ async def leaderboard(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed)
 
 # Error handling for missing commands
-@bot.event
+@bot.event  
 async def on_command_error(ctx, error):
     if isinstance(error, commands.CommandNotFound):
         return  # Ignore command not found errors
     
     logging.error(f"Command error: {error}")
+
+@bot.event
+async def on_application_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    if isinstance(error, app_commands.CommandOnCooldown):
+        await interaction.response.send_message(f"⏰ Command on cooldown. Try again in {error.retry_after:.2f} seconds.", ephemeral=True)
+    else:
+        logging.error(f"Application command error: {error}")
+        if not interaction.response.is_done():
+            await interaction.response.send_message("❌ An error occurred while processing the command.", ephemeral=True)
 
 # Keep alive function for hosting
 keep_alive()
