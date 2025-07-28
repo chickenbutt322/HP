@@ -12,6 +12,7 @@ task = "shell.exec"
 args = "python DeepInfamousDirectories/main.py"
 
 [nix]
+channel = "stable-25_05"
 
 [[ports]]
 localPort = 8080
