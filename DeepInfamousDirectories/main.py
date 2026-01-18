@@ -14,6 +14,10 @@ import re
 import uuid
 import logging
 import time
+from PIL import Image, ImageDraw, ImageFont
+import requests
+from io import BytesIO
+import yt_dlp
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -379,6 +383,94 @@ async def add_xp(user_id, base_xp, member):
 
         except Exception as e:
             logging.error(f"Error adding XP to user {user_id}: {e}")
+
+def generate_rank_card(member, level, current_xp, xp_for_current, xp_for_next, rank_position, guild_icon_url):
+    """Generate a beautiful rank card image"""
+    # Create image
+    width, height = 900, 300
+    card = Image.new('RGB', (width, height), color=(35, 39, 42))
+    draw = ImageDraw.Draw(card)
+    
+    # Try to load fonts (fall back to default if not available)
+    try:
+        name_font = ImageFont.truetype("arial.ttf", 40)
+        level_font = ImageFont.truetype("arial.ttf", 60)
+        stat_font = ImageFont.truetype("arial.ttf", 20)
+    except:
+        name_font = ImageFont.load_default()
+        level_font = ImageFont.load_default()
+        stat_font = ImageFont.load_default()
+    
+    # Draw background gradient effect with rectangles
+    for y in range(height):
+        color_value = int(35 + (y / height) * 20)
+        draw.line([(0, y), (width, y)], fill=(color_value, color_value + 4, color_value + 8))
+    
+    # Draw user avatar (circle)
+    try:
+        avatar_response = requests.get(member.display_avatar.url)
+        avatar = Image.open(BytesIO(avatar_response.content)).convert('RGBA')
+        avatar = avatar.resize((100, 100), Image.Resampling.LANCZOS)
+        
+        # Create circular mask
+        mask = Image.new('L', (100, 100), 0)
+        mask_draw = ImageDraw.Draw(mask)
+        mask_draw.ellipse([0, 0, 100, 100], fill=255)
+        
+        # Paste avatar
+        card.paste(avatar, (30, 100), mask)
+    except:
+        pass
+    
+    # Draw username
+    draw.text((150, 80), member.name[:20], font=name_font, fill=(255, 255, 255))
+    
+    # Draw level
+    draw.text((650, 100), f"Lvl {level}", font=level_font, fill=(88, 166, 255))
+    
+    # Draw rank position
+    draw.text((150, 140), f"Rank: #{rank_position}", font=stat_font, fill=(100, 200, 100))
+    
+    # Draw XP bar
+    bar_width = 700
+    bar_height = 25
+    bar_x = 150
+    bar_y = 190
+    
+    # Background bar
+    draw.rectangle([bar_x, bar_y, bar_x + bar_width, bar_y + bar_height], fill=(60, 60, 60), outline=(100, 100, 100))
+    
+    # XP progress
+    xp_in_level = current_xp - xp_for_current
+    xp_needed = xp_for_next - xp_for_current
+    progress_width = (xp_in_level / xp_needed) * bar_width if xp_needed > 0 else 0
+    draw.rectangle([bar_x, bar_y, bar_x + progress_width, bar_y + bar_height], fill=(88, 166, 255))
+    
+    # XP text
+    draw.text((bar_x + 10, bar_y + 2), f"{xp_in_level}/{xp_needed} XP", font=stat_font, fill=(255, 255, 255))
+    
+    # Draw server logo at bottom as rectangle
+    try:
+        logo_response = requests.get(guild_icon_url)
+        logo = Image.open(BytesIO(logo_response.content)).convert('RGBA')
+        logo = logo.resize((80, 80), Image.Resampling.LANCZOS)
+        card.paste(logo, (width - 100, height - 90), logo)
+    except:
+        pass
+    
+    # Save to bytes
+    img_bytes = BytesIO()
+    card.save(img_bytes, format='PNG')
+    img_bytes.seek(0)
+    
+    return img_bytes
+
+# Anti-Spam Configuration
+spam_cache = {}  # {user_id: {'messages': [], 'warnings': int}}
+SPAM_THRESHOLD = 5  # messages
+SPAM_TIME_WINDOW = 10  # seconds
+CAPS_THRESHOLD = 0.75  # 75% caps
+MIN_CHARS_FOR_CAPS_CHECK = 10
             return None, 0
 
 def get_level_progress(user_id, member):
@@ -1298,6 +1390,59 @@ async def on_message(message):
     if message.author.bot or not message.guild:
         return
 
+    # Anti-Spam Detection
+    user_id = message.author.id
+    current_time = time.time()
+    
+    if user_id not in spam_cache:
+        spam_cache[user_id] = {'messages': [], 'warnings': 0}
+    
+    # Add current message timestamp
+    spam_cache[user_id]['messages'].append({
+        'content': message.content,
+        'time': current_time
+    })
+    
+    # Remove old messages outside time window
+    spam_cache[user_id]['messages'] = [
+        m for m in spam_cache[user_id]['messages'] 
+        if current_time - m['time'] < SPAM_TIME_WINDOW
+    ]
+    
+    # Check for rapid message spam
+    if len(spam_cache[user_id]['messages']) > SPAM_THRESHOLD:
+        try:
+            await message.delete()
+            spam_cache[user_id]['warnings'] += 1
+            
+            if spam_cache[user_id]['warnings'] == 1:
+                await message.author.send("⚠️ **Slow down!** Stop spamming messages.")
+            elif spam_cache[user_id]['warnings'] >= 3:
+                # Mute after 3 spam warnings
+                muted_role = message.guild.get_role(1396988857224003595)
+                if muted_role:
+                    await message.author.add_roles(muted_role)
+                    await message.author.send("🔇 You've been muted for spam. Contact a moderator to appeal.")
+                spam_cache[user_id]['warnings'] = 0
+        except discord.Forbidden:
+            pass
+        return
+    
+    # Check for excessive caps
+    if len(message.content) > MIN_CHARS_FOR_CAPS_CHECK:
+        caps_count = sum(1 for c in message.content if c.isupper())
+        if caps_count / len(message.content) > CAPS_THRESHOLD:
+            try:
+                await message.delete()
+                await message.author.send("🔤 Please don't use excessive caps.")
+            except discord.Forbidden:
+                pass
+            return
+    
+    # Reset spam counter if no spam detected
+    if len(spam_cache[user_id]['messages']) <= SPAM_THRESHOLD and spam_cache[user_id]['warnings'] > 0:
+        spam_cache[user_id]['warnings'] = max(0, spam_cache[user_id]['warnings'] - 1)
+
     # Check for spam (prevent XP farming)
     user_id = message.author.id
     if user_id in user_levels:
@@ -1650,6 +1795,152 @@ async def leaderboard(interaction: discord.Interaction):
     embed.description = leaderboard_text or "No users found!"
     
     await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="rankcard", description="Display your rank card with level, XP, and stats")
+@app_commands.describe(user="User to check rank card for (optional)")
+async def rank_card(interaction: discord.Interaction, user: discord.Member = None):
+    target_user = user or interaction.user
+    
+    if target_user.id not in user_levels:
+        await interaction.response.send_message(f"{target_user.mention} hasn't earned any XP yet!", ephemeral=True)
+        return
+    
+    await interaction.response.defer()
+    
+    try:
+        # Get user data
+        user_data = user_levels[target_user.id]
+        level = user_data['level']
+        current_xp = user_data['xp']
+        xp_for_current = calculate_xp_for_level(level)
+        xp_for_next = calculate_xp_for_level(level + 1)
+        
+        # Calculate rank position
+        sorted_users = sorted(user_levels.items(), key=lambda x: x[1]['xp'], reverse=True)
+        rank_position = next((i + 1 for i, (uid, _) in enumerate(sorted_users) if uid == target_user.id), 0)
+        
+        # Get guild icon
+        guild_icon_url = interaction.guild.icon.url if interaction.guild.icon else ""
+        
+        # Generate rank card
+        card_image = generate_rank_card(target_user, level, current_xp, xp_for_current, xp_for_next, rank_position, guild_icon_url)
+        
+        # Send as file
+        file = discord.File(card_image, filename="rankcard.png")
+        embed = discord.Embed(title=f"{target_user.display_name}'s Rank Card", color=0x00ff00)
+        embed.set_image(url="attachment://rankcard.png")
+        
+        await interaction.followup.send(embed=embed, file=file)
+    except Exception as e:
+        logging.error(f"Error generating rank card: {e}")
+        await interaction.followup.send(f"❌ Error generating rank card: {str(e)}", ephemeral=True)
+
+# Music Player (using yt-dlp)
+music_queue = {}  # {guild_id: {'queue': [], 'now_playing': None, 'vc': voice_client}}
+
+@bot.tree.command(name="play", description="Play a song from YouTube")
+@app_commands.describe(query="YouTube URL or search query")
+async def play_song(interaction: discord.Interaction, query: str):
+    if not interaction.user.voice or not interaction.user.voice.channel:
+        await interaction.response.send_message("❌ You must be in a voice channel!", ephemeral=True)
+        return
+    
+    await interaction.response.defer()
+    
+    try:
+        guild_id = interaction.guild.id
+        
+        # Join voice channel
+        vc = interaction.user.voice.channel
+        if guild_id not in music_queue:
+            music_queue[guild_id] = {'queue': [], 'now_playing': None, 'vc': None}
+        
+        if not music_queue[guild_id]['vc'] or not music_queue[guild_id]['vc'].is_connected():
+            music_queue[guild_id]['vc'] = await vc.connect()
+        
+        # Extract info using yt-dlp
+        ydl_opts = {
+            'format': 'bestaudio/best',
+            'quiet': True,
+            'no_warnings': True,
+            'default_search': 'ytsearch',
+            'max_downloads': 1,
+        }
+        
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(query, download=False)
+            if 'entries' in info:
+                info = info['entries'][0]
+            
+            url = info['url']
+            title = info['title']
+            
+            music_queue[guild_id]['queue'].append({'url': url, 'title': title})
+            
+            await interaction.followup.send(f"⏯️ Added to queue: **{title}**")
+            
+            # Play if nothing is playing
+            if not music_queue[guild_id]['now_playing']:
+                await play_next_song(guild_id, interaction)
+    
+    except Exception as e:
+        logging.error(f"Error playing song: {e}")
+        await interaction.followup.send(f"❌ Error: {str(e)}", ephemeral=True)
+
+async def play_next_song(guild_id, interaction):
+    """Play next song in queue"""
+    try:
+        if not music_queue[guild_id]['queue']:
+            music_queue[guild_id]['now_playing'] = None
+            return
+        
+        song = music_queue[guild_id]['queue'].pop(0)
+        music_queue[guild_id]['now_playing'] = song
+        
+        vc = music_queue[guild_id]['vc']
+        audio = discord.FFmpegPCMAudio(song['url'], options="-vn")
+        
+        def after_playing(error):
+            if error:
+                logging.error(f"Error playing audio: {error}")
+            asyncio.run_coroutine_threadsafe(play_next_song(guild_id, interaction), bot.loop)
+        
+        vc.play(audio, after=after_playing)
+    except Exception as e:
+        logging.error(f"Error in play_next_song: {e}")
+
+@bot.tree.command(name="stop", description="Stop the music player")
+async def stop_music(interaction: discord.Interaction):
+    guild_id = interaction.guild.id
+    
+    if guild_id not in music_queue or not music_queue[guild_id]['vc']:
+        await interaction.response.send_message("❌ Not playing anything!", ephemeral=True)
+        return
+    
+    vc = music_queue[guild_id]['vc']
+    if vc.is_playing():
+        vc.stop()
+        music_queue[guild_id]['queue'] = []
+        music_queue[guild_id]['now_playing'] = None
+        await vc.disconnect()
+        await interaction.response.send_message("⏹️ Music stopped and queue cleared.")
+    else:
+        await interaction.response.send_message("❌ Not playing anything!", ephemeral=True)
+
+@bot.tree.command(name="skip", description="Skip current song")
+async def skip_song(interaction: discord.Interaction):
+    guild_id = interaction.guild.id
+    
+    if guild_id not in music_queue or not music_queue[guild_id]['vc']:
+        await interaction.response.send_message("❌ Not playing anything!", ephemeral=True)
+        return
+    
+    vc = music_queue[guild_id]['vc']
+    if vc.is_playing():
+        vc.stop()
+        await interaction.response.send_message("⏭️ Skipped current song.")
+    else:
+        await interaction.response.send_message("❌ Not playing anything!", ephemeral=True)
 
 # Error handling for missing commands
 @bot.event  
