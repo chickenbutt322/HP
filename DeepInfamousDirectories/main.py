@@ -471,7 +471,6 @@ SPAM_THRESHOLD = 5  # messages
 SPAM_TIME_WINDOW = 10  # seconds
 CAPS_THRESHOLD = 0.75  # 75% caps
 MIN_CHARS_FOR_CAPS_CHECK = 10
-            return None, 0
 
 def get_level_progress(user_id, member):
     """Get user's level progress information, including booster bonuses"""
