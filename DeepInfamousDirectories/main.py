@@ -431,6 +431,10 @@ app = Flask('')
 def home():
     return "Bot is alive!"
 
+@app.route('/healthz')
+def health():
+    return {'status': 'ok'}, 200
+
 def run():
     app.run(host='0.0.0.0', port=8080)
 
@@ -1136,8 +1140,8 @@ async def unmute_user(interaction: discord.Interaction, user: discord.Member):
 @app_commands.describe(user_id="The user ID to unban")
 async def unban_user(interaction: discord.Interaction, user_id: str):
     moderator = interaction.user
-    if not isinstance(moderator, discord.Member) or not moderaton members permission
-    if not interaction.user.guild_permissions.ban_members:response.send_message("❌ You don't have permission to unban users!", ephemeral=True)
+    if not isinstance(moderator, discord.Member) or not moderator.guild_permissions.ban_members:
+        await interaction.response.send_message("❌ You don't have permission to unban users!", ephemeral=True)
         return
 
     try:
