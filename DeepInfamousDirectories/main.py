@@ -20,6 +20,8 @@ logging.basicConfig(level=logging.INFO)
 
 load_dotenv()
 TOKEN = os.getenv("TOKEN")
+if not TOKEN:
+    raise ValueError("TOKEN environment variable not set in .env file")
 
 intents = discord.Intents.default()
 intents.members = True
@@ -455,7 +457,8 @@ async def on_ready():
 
 @bot.tree.command(name="sync", description="Manually sync slash commands (Admin only)")
 async def sync_commands(interaction: discord.Interaction):
-    if not interaction.user.guild_permissions.administrator:
+    user = interaction.user
+    if not isinstance(user, discord.Member) or not user.guild_permissions.administrator:
         await interaction.response.send_message("❌ You need administrator permission to sync commands!", ephemeral=True)
         return
 
@@ -609,9 +612,9 @@ async def giveaway_slash(
         'host': host_mention,
         'end_time': end_time,
         'entries': [],
-        'required_role': required_role.name if required_role else None,
-        'blacklisted_role': blacklisted_role.name if blacklisted_role else None,
-        'rig_winner': rig_winner.mention if rig_winner else None,
+        'required_role': required_role.name if required_role else '',
+        'blacklisted_role': blacklisted_role.name if blacklisted_role else '',
+        'rig_winner': rig_winner.mention if rig_winner else '',
         'ended': False
     }
 
@@ -817,8 +820,8 @@ async def force_end_giveaway(interaction: discord.Interaction, message_id: str):
     reason="Reason for the warning"
 )
 async def warn_user(interaction: discord.Interaction, user: discord.Member, reason: str):
-    # Check if user has manage messages permission
-    if not interaction.user.guild_permissions.manage_messages:
+    moderator = interaction.user
+    if not isinstance(moderator, discord.Member) or not moderator.guild_permissions.manage_messages:
         await interaction.response.send_message("❌ You don't have permission to warn users!", ephemeral=True)
         return
 
@@ -928,7 +931,7 @@ async def warn_user(interaction: discord.Interaction, user: discord.Member, reas
             description=f"**Server:** {interaction.guild.name}\n"
                        f"**Reason:** {reason}\n"
                        f"**Total Warnings:** {warning_count}\n"
-                       f"**Moderator:** {interaction.user.name}",
+                       f"**Moderator:** {moderator.name}",
             color=0xffaa00
         )
         if punishment_message:
@@ -944,7 +947,7 @@ async def warn_user(interaction: discord.Interaction, user: discord.Member, reas
 
 @bot.tree.command(name="warnings", description="Check warnings for a user")
 @app_commands.describe(user="The user to check warnings for (optional - defaults to yourself)")
-async def check_warnings(interaction: discord.Interaction, user: discord.Member = None):
+async def check_warnings(interaction: discord.Interaction, user: discord.Member | None = None):
     target_user = user or interaction.user
 
     # Only allow checking other users if you have manage messages permission
@@ -1005,7 +1008,8 @@ async def check_warnings(interaction: discord.Interaction, user: discord.Member 
 @app_commands.describe(user="The user to clear warnings for")
 async def clear_warnings(interaction: discord.Interaction, user: discord.Member):
     # Check if user has administrator permission
-    if not interaction.user.guild_permissions.administrator:
+    moderator = interaction.user
+    if not isinstance(moderator, discord.Member) or not moderator.guild_permissions.administrator:
         await interaction.response.send_message("❌ You need administrator permission to clear warnings!", ephemeral=True)
         return
 
@@ -1036,7 +1040,8 @@ async def clear_warnings(interaction: discord.Interaction, user: discord.Member)
 )
 async def remove_warning(interaction: discord.Interaction, user: discord.Member, warning_id: str):
     # Check if user has manage messages permission
-    if not interaction.user.guild_permissions.manage_messages:
+    moderator = interaction.user
+    if not isinstance(moderator, discord.Member) or not moderator.guild_permissions.manage_messages:
         await interaction.response.send_message("❌ You don't have permission to remove warnings!", ephemeral=True)
         return
 
@@ -1078,8 +1083,8 @@ async def remove_warning(interaction: discord.Interaction, user: discord.Member,
 @bot.tree.command(name="unmute", description="Remove mute from a user")
 @app_commands.describe(user="The user to unmute")
 async def unmute_user(interaction: discord.Interaction, user: discord.Member):
-    # Check if user has manage messages permission
-    if not interaction.user.guild_permissions.manage_messages:
+    moderator = interaction.user
+    if not isinstance(moderator, discord.Member) or not moderator.guild_permissions.manage_messages:
         await interaction.response.send_message("❌ You don't have permission to unmute users!", ephemeral=True)
         return
 
@@ -1130,9 +1135,9 @@ async def unmute_user(interaction: discord.Interaction, user: discord.Member):
 @bot.tree.command(name="unban", description="Unban a user")
 @app_commands.describe(user_id="The user ID to unban")
 async def unban_user(interaction: discord.Interaction, user_id: str):
-    # Check if user has ban members permission
-    if not interaction.user.guild_permissions.ban_members:
-        await interaction.response.send_message("❌ You don't have permission to unban users!", ephemeral=True)
+    moderator = interaction.user
+    if not isinstance(moderator, discord.Member) or not moderaton members permission
+    if not interaction.user.guild_permissions.ban_members:response.send_message("❌ You don't have permission to unban users!", ephemeral=True)
         return
 
     try:
@@ -1211,7 +1216,7 @@ async def apply_mute(user: discord.Member, guild: discord.Guild, days: int, reas
     except discord.Forbidden:
         return False
 
-async def schedule_unmute(user_id: int, guild_id: int, delay_seconds: float):
+async def schedule_unmute(user_id: int, guild_id, delay_seconds: float):
     """Schedule automatic unmute"""
     await asyncio.sleep(delay_seconds)
 
@@ -1255,7 +1260,7 @@ async def schedule_unmute(user_id: int, guild_id: int, delay_seconds: float):
         except discord.Forbidden:
             pass
 
-async def schedule_unban(user_id: int, guild_id: int, delay_seconds: float):
+async def schedule_unban(user_id: int, guild_id, delay_seconds: float):
     """Schedule automatic unban"""
     await asyncio.sleep(delay_seconds)
 
@@ -1414,7 +1419,7 @@ async def end_giveaway_after_delay(giveaway_id, delay_seconds):
 
 @bot.tree.command(name="userinfo", description="Get detailed information about a user")
 @app_commands.describe(user="The user to get info about (optional - defaults to yourself)")
-async def user_info(interaction: discord.Interaction, user: discord.Member = None):
+async def user_info(interaction: discord.Interaction, user: discord.Member | None = None):
     target_user = user or interaction.user
 
     embed = discord.Embed(
@@ -1465,9 +1470,9 @@ async def server_info(interaction: discord.Interaction):
     embed.add_field(name="📅 Created", value=f"<t:{int(guild.created_at.timestamp())}:F>", inline=True)
 
     # Counts
-    embed.add_field(name="👥 Members", value=guild.member_count, inline=True)
-    embed.add_field(name="🎭 Roles", value=len(guild.roles), inline=True)
-    embed.add_field(name="📝 Channels", value=len(guild.channels), inline=True)
+    embed.add_field(name="👥 Members", value=str(guild.member_count), inline=True)
+    embed.add_field(name="🎭 Roles", value=str(len(guild.roles)), inline=True)
+    embed.add_field(name="📝 Channels", value=str(len(guild.channels)), inline=True)
 
     # Boosts
     embed.add_field(name="💎 Boost Level", value=f"Level {guild.premium_tier}", inline=True)

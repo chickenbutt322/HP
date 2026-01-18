@@ -1,6 +1,11 @@
 [project]
-name = "repl-nix-workspace"
+name = "ss-bot"
 version = "0.1.0"
-description = "Add your description here"
+description = "Discord server moderation and leveling bot"
+authors = ["Your Name <you@example.com>"]
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "discord-py>=2.5.2",
+    "flask>=3.1.1",
+    "python-dotenv>=1.1.1",
+]
