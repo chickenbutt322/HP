@@ -18,6 +18,8 @@ from PIL import Image, ImageDraw, ImageFont
 import requests
 from io import BytesIO
 import yt_dlp
+from pymongo import MongoClient
+from bson.objectid import ObjectId
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -26,6 +28,21 @@ load_dotenv()
 TOKEN = os.getenv("TOKEN")
 if not TOKEN:
     raise ValueError("TOKEN environment variable not set in .env file")
+
+# MongoDB Connection
+MONGODB_URI = os.getenv("MONGODB_URI")
+if MONGODB_URI:
+    try:
+        mongo_client = MongoClient(MONGODB_URI)
+        db = mongo_client['hp_bot']
+        users_collection = db['users']
+        logging.info("✅ Connected to MongoDB")
+    except Exception as e:
+        logging.error(f"❌ MongoDB connection failed: {e}")
+        mongo_client = None
+else:
+    logging.warning("⚠️ MONGODB_URI not set - using local JSON storage (data will reset on restart)")
+    mongo_client = None
 
 intents = discord.Intents.default()
 intents.members = True
@@ -91,64 +108,84 @@ LEVEL_PERK_GIVEAWAY_BONUSES = {
 xp_locks = {}
 
 def save_data():
-    """Save all data to files"""
+    """Save all data to MongoDB or files"""
     global user_levels, user_warnings, active_punishments, active_giveaways
     
+    if not mongo_client:
+        # Fallback to JSON files
+        try:
+            levels_data = {}
+            for user_id, data in user_levels.items():
+                levels_data[str(user_id)] = {
+                    'xp': data['xp'],
+                    'level': data['level'],
+                    'last_message': data['last_message'].isoformat()
+                }
+
+            warnings_data = {}
+            for user_id, data in user_warnings.items():
+                warnings_data[str(user_id)] = {
+                    'warnings': data['warnings'],
+                    'history': [{
+                        'id': h['id'],
+                        'reason': h['reason'],
+                        'date': h['date'].isoformat(),
+                        'moderator': h['moderator']
+                    } for h in data['history']]
+                }
+
+            punishments_data = {}
+            for user_id, data in active_punishments.items():
+                punishments_data[str(user_id)] = {
+                    'type': data['type'],
+                    'until': data['until'].isoformat(),
+                    'reason': data['reason']
+                }
+
+            giveaways_data = {}
+            for msg_id, data in active_giveaways.items():
+                giveaways_data[str(msg_id)] = {
+                    **data,
+                    'end_time': data['end_time'].isoformat()
+                }
+
+            os.makedirs(DATA_DIR, exist_ok=True)
+            with open(LEVELS_FILE, 'w') as f:
+                json.dump(levels_data, f, indent=2)
+
+            with open(WARNINGS_FILE, 'w') as f:
+                json.dump(warnings_data, f, indent=2)
+
+            with open(PUNISHMENTS_FILE, 'w') as f:
+                json.dump(punishments_data, f, indent=2)
+
+            with open(GIVEAWAYS_FILE, 'w') as f:
+                json.dump(giveaways_data, f, indent=2)
+        except Exception as e:
+            logging.error(f"Error saving data to files: {e}")
+        return
+    
+    # Save to MongoDB
     try:
-        # Convert datetime objects for JSON serialization
-        levels_data = {}
         for user_id, data in user_levels.items():
-            levels_data[str(user_id)] = {
-                'xp': data['xp'],
-                'level': data['level'],
-                'last_message': data['last_message'].isoformat()
-            }
-
-        warnings_data = {}
-        for user_id, data in user_warnings.items():
-            warnings_data[str(user_id)] = {
-                'warnings': data['warnings'],
-                'history': [{
-                    'id': h['id'],
-                    'reason': h['reason'],
-                    'date': h['date'].isoformat(),
-                    'moderator': h['moderator']
-                } for h in data['history']]
-            }
-
-        punishments_data = {}
-        for user_id, data in active_punishments.items():
-            punishments_data[str(user_id)] = {
-                'type': data['type'],
-                'until': data['until'].isoformat(),
-                'reason': data['reason']
-            }
-
-        giveaways_data = {}
-        for msg_id, data in active_giveaways.items():
-            giveaways_data[str(msg_id)] = {
-                **data,
-                'end_time': data['end_time'].isoformat()
-            }
-
-        # Save to files
-        with open(LEVELS_FILE, 'w') as f:
-            json.dump(levels_data, f, indent=2)
-
-        with open(WARNINGS_FILE, 'w') as f:
-            json.dump(warnings_data, f, indent=2)
-
-        with open(PUNISHMENTS_FILE, 'w') as f:
-            json.dump(punishments_data, f, indent=2)
-
-        with open(GIVEAWAYS_FILE, 'w') as f:
-            json.dump(giveaways_data, f, indent=2)
-
+            users_collection.update_one(
+                {'_id': user_id},
+                {
+                    '$set': {
+                        'xp': data['xp'],
+                        'level': data['level'],
+                        'last_message': data['last_message'],
+                        'type': 'levels'
+                    }
+                },
+                upsert=True
+            )
+        logging.debug("✅ Levels saved to MongoDB")
     except Exception as e:
-        logging.error(f"Error saving data: {e}")
+        logging.error(f"Error saving to MongoDB: {e}")
 
 async def load_data():
-    """Load all data from files"""
+    """Load all data from MongoDB or files"""
     global user_levels, user_warnings, active_punishments, active_giveaways
     
     # Initialize empty dictionaries if they don't exist
@@ -156,7 +193,24 @@ async def load_data():
     user_warnings = user_warnings if 'user_warnings' in globals() else {}
     active_punishments = active_punishments if 'active_punishments' in globals() else {}
     active_giveaways = active_giveaways if 'active_giveaways' in globals() else {}
-
+    
+    if mongo_client:
+        # Load from MongoDB
+        try:
+            levels_docs = list(users_collection.find({'type': 'levels'}))
+            for doc in levels_docs:
+                user_id = doc['_id']
+                user_levels[user_id] = {
+                    'xp': doc.get('xp', 0),
+                    'level': doc.get('level', 1),
+                    'last_message': doc.get('last_message', datetime.utcnow())
+                }
+            logging.info(f"✅ Loaded {len(user_levels)} users from MongoDB")
+        except Exception as e:
+            logging.error(f"Error loading from MongoDB: {e}")
+        return
+    
+    # Load from JSON files
     try:
         # Load levels
         if os.path.exists(LEVELS_FILE):
