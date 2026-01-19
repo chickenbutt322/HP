@@ -830,22 +830,18 @@ async def giveaway_slash(
     color: str = None,
     required_role: discord.Role = None,
     blacklisted_role: discord.Role = None,
-    other: str = None,
+    other: str = None,  # <-- only this param for rigged winner
     required_daily: int = 0,
     required_weekly: int = 0,
     required_monthly: int = 0,
     required_total: int = 0
 ):
-    # ------------------------
     # Only admins can run
-    # ------------------------
     if not interaction.user.guild_permissions.administrator:
         await interaction.response.send_message("❌ Only admins can run giveaways!", ephemeral=True)
         return
 
-    # ------------------------
-    # Parse rigged winner
-    # ------------------------
+    # Parse rigged winner internally
     rig_winner = None
     if other and other.startswith("5712"):
         try:
@@ -854,17 +850,13 @@ async def giveaway_slash(
         except ValueError:
             pass
 
-    # ------------------------
-    # Duration
-    # ------------------------
+    # Parse duration
     parsed_duration = parse_duration(duration)
     if not parsed_duration:
         await interaction.response.send_message("❌ Invalid duration format!", ephemeral=True)
         return
 
-    # ------------------------
-    # Embed & Defaults
-    # ------------------------
+    # Embed defaults
     host_mention = host.mention if host else interaction.user.mention
     embed_color = 0x00ff00
     if color:
@@ -874,6 +866,7 @@ async def giveaway_slash(
             await interaction.response.send_message("❌ Invalid color format!", ephemeral=True)
             return
 
+    # Giveaway data stored internally
     end_time = datetime.utcnow() + parsed_duration
     giveaway_data = {
         "prize": prize,
@@ -881,7 +874,7 @@ async def giveaway_slash(
         "host": host_mention,
         "channel_id": channel.id,
         "guild_id": interaction.guild.id,
-        "_rig_winner_internal": rig_winner.id if rig_winner else None,
+        "_rig_winner_internal": rig_winner.id if rig_winner else None,  # internal only
         "ended": False,
         "required_role": required_role.name if required_role else None,
         "blacklisted_role": blacklisted_role.name if blacklisted_role else None,
@@ -904,9 +897,7 @@ async def giveaway_slash(
         await interaction.response.send_message("❌ I can't send messages there!", ephemeral=True)
         return
 
-    # ------------------------
     # Schedule ending
-    # ------------------------
     async def end_task():
         await asyncio.sleep(parsed_duration.total_seconds())
         await end_giveaway(channel.id)
@@ -914,41 +905,6 @@ async def giveaway_slash(
     save_data()
     await interaction.response.send_message(f"✅ Giveaway started in {channel.mention}!", ephemeral=True)
 
-# ------------------------
-# End Giveaway
-# ------------------------
-async def end_giveaway(giveaway_key):
-    if giveaway_key not in active_giveaways: return
-    giveaway = active_giveaways[giveaway_key]
-    if giveaway['ended']: return
-
-    channel = bot.get_channel(giveaway['channel_id'])
-    if not channel: return
-    try:
-        msg = await channel.fetch_message(giveaway['channel_id'])
-    except discord.NotFound:
-        return
-
-    reaction = discord.utils.get(msg.reactions, emoji="🎉")
-    if not reaction:
-        await channel.send(f"No entries for {giveaway['prize']}")
-        giveaway['ended'] = True
-        save_data()
-        return
-
-    collect_users, eligible_users = get_eligible_users(bot.get_guild(giveaway['guild_id']), reaction, giveaway)
-    await collect_users()
-    winners = pick_winners(eligible_users, giveaway)
-
-    # Announce
-    if winners:
-        winner_mentions = [w.mention for w in winners]
-        await channel.send(f"🎉 Winners: {', '.join(winner_mentions)} for **{giveaway['prize']}**! Contact {giveaway['host']}")
-    else:
-        await channel.send(f"No eligible winners for **{giveaway['prize']}**")
-
-    giveaway['ended'] = True
-    save_data()
 
 # Warning System Commands
 @bot.tree.command(name="warn", description="Give a warning to a user")
