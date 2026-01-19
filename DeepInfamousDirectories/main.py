@@ -813,6 +813,7 @@ async def on_message(message):
     required_weekly="Required weekly messages (optional)",
     required_monthly="Required monthly messages (optional)",
     required_total="Required total messages (optional)"
+)
 async def giveaway_slash(
     interaction: discord.Interaction,
     channel: discord.TextChannel,          # Channel to post the giveaway
@@ -831,6 +832,8 @@ async def giveaway_slash(
     required_monthly: int = 0,             # Required monthly messages (optional)
     required_total: int = 0                # Required total messages (optional)
 ):
+    # ... your giveaway logic goes here
+
 
     # Only admins can run
     if not interaction.user.guild_permissions.administrator:
