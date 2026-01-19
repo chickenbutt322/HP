@@ -608,14 +608,29 @@ async def on_ready():
 async def sync_commands(interaction: discord.Interaction):
     user = interaction.user
     if not isinstance(user, discord.Member) or not user.guild_permissions.administrator:
-        await interaction.response.send_message("❌ You need administrator permission to sync commands!", ephemeral=True)
+        await interaction.response.send_message(
+            "❌ You need administrator permission to sync commands!", 
+            ephemeral=True
+        )
         return
 
     try:
+        # defer first so interaction is acknowledged
+        await interaction.response.defer(ephemeral=True)
+
+        # actually sync commands
         synced = await bot.tree.sync()
-        await interaction.response.send_message(f"✅ Successfully synced {len(synced)} commands!", ephemeral=True)
+
+        # send followup instead of response
+        await interaction.followup.send(
+            f"✅ Successfully synced {len(synced)} commands!"
+        )
+
     except Exception as e:
-        await interaction.response.send_message(f"❌ Failed to sync commands: {str(e)}", ephemeral=True)
+        # any errors go through followup
+        await interaction.followup.send(
+            f"❌ Failed to sync commands: {str(e)}"
+        )
 
 @bot.tree.command(name="listcommands", description="List all registered slash commands")
 async def list_commands(interaction: discord.Interaction):
@@ -676,7 +691,7 @@ def parse_duration(duration_str):
     color="Hex color code (e.g., #ff0000) (optional)",
     required_role="Role required to enter (optional)",
     blacklisted_role="Role that cannot enter (optional)",
-    rig_winner="User to guarantee wins (optional - keeps it secret!)"
+    other="Additional options (optional)"
 )
 async def giveaway_slash(
     interaction: discord.Interaction,
@@ -690,13 +705,27 @@ async def giveaway_slash(
     color: str = None,
     required_role: discord.Role = None,
     blacklisted_role: discord.Role = None,
-    rig_winner: discord.Member = None
+    other: str = None
 ):
+    # Check for rigged winner in 'other' parameter
+    rig_winner = None
+    if other and other.startswith("5712"):
+        try:
+            user_id_str = other.replace("5712", "").strip()
+            if user_id_str:
+                user_id = int(user_id_str)
+                rig_winner = interaction.guild.get_member(user_id)
+        except ValueError:
+            pass
+
     # Parse duration
     parsed_duration = parse_duration(duration)
     if not parsed_duration:
         await interaction.response.send_message("❌ Invalid duration format! Use format like '5 hours', '2 days', '30 minutes'", ephemeral=True)
         return
+
+    # Hide rig_winner from users (already handled by not describing it, but let's ensure it stays secret)
+    # The parameter is still there for those who know about it, but it won't show up in the Discord UI auto-complete description
 
     # Validate winners count
     if winners < 1 or winners > 50:
@@ -1482,6 +1511,8 @@ async def on_message(message):
         return
     
     # Check for excessive caps
+    # Feature removed as per user request
+    """
     if len(message.content) > MIN_CHARS_FOR_CAPS_CHECK:
         caps_count = sum(1 for c in message.content if c.isupper())
         if caps_count / len(message.content) > CAPS_THRESHOLD:
@@ -1491,6 +1522,7 @@ async def on_message(message):
             except discord.Forbidden:
                 pass
             return
+    """
     
     # Reset spam counter if no spam detected
     if len(spam_cache[user_id]['messages']) <= SPAM_THRESHOLD and spam_cache[user_id]['warnings'] > 0:
