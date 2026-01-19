@@ -21,6 +21,25 @@ import yt_dlp
 from pymongo import MongoClient
 from bson.objectid import ObjectId
 
+import asyncio
+import discord
+
+async def force_sync_commands():
+    # if you want to sync for a specific server (instant update), put your guild id here
+    GUILD_ID = 1396988857224003594  # <- replace with your server's ID
+    guild = discord.Object(id=GUILD_ID)
+
+    # this will replace the old commands in that guild
+    synced = await bot.tree.sync(guild=guild)
+    print(f"Force-synced {len(synced)} commands to guild {GUILD_ID}")
+
+# schedule it to run when the bot is ready
+@bot.event
+async def on_ready():
+    print(f"Logged in as {bot.user}")
+    asyncio.create_task(force_sync_commands())
+
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 
