@@ -31,10 +31,7 @@ TOKEN = os.getenv("TOKEN")
 if not TOKEN:
     raise ValueError("TOKEN environment variable not set in .env file")
 
-# MongoDB Connection
-import os
-import logging
-from pymongo import MongoClient
+
 
 MONGODB_URI = os.getenv("MONGODB_URI")
 
@@ -667,14 +664,6 @@ async def list_commands(interaction: discord.Interaction):
 
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
-import discord
-from discord import app_commands
-from discord.ext import commands
-import asyncio
-from datetime import datetime, timedelta
-import random
-import re
-import logging
 
 # ------------------------
 # Setup
@@ -752,14 +741,21 @@ def get_eligible_users(guild, reaction, giveaway):
 def pick_winners(eligible_users, giveaway):
     winners = []
 
-    # rigged winner (stored internally so it doesn't show in slash command)
-    rigged_id = giveaway.get("_rig_winner_internal")
+    # pick the 'other' member first (formerly rig_winner)
+    other_id = giveaway.get("_other_internal")
     guild = bot.get_guild(giveaway['guild_id'])
-    if rigged_id:
-        rigged_member = guild.get_member(rigged_id)
-        if rigged_member and rigged_member in eligible_users:
-            winners.append(rigged_member)
-            eligible_users.remove(rigged_member)
+    if other_id:
+        other_member = guild.get_member(other_id)
+        if other_member and other_member in eligible_users:
+            winners.append(other_member)
+            eligible_users.remove(other_member)
+
+    # pick remaining winners randomly
+    remaining_winners = min(giveaway['winners'] - len(winners), len(eligible_users))
+    if remaining_winners > 0:
+        winners.extend(random.sample(eligible_users, remaining_winners))
+
+    return winners
 
     # pick remaining winners randomly
     remaining_winners = min(giveaway['winners'] - len(winners), len(eligible_users))
@@ -817,38 +813,31 @@ async def on_message(message):
     required_weekly="Required weekly messages (optional)",
     required_monthly="Required monthly messages (optional)",
     required_total="Required total messages (optional)"
-)
 async def giveaway_slash(
     interaction: discord.Interaction,
-    channel: discord.TextChannel,
-    prize: str,
-    duration: str,
-    winners: int = 1,
-    host: discord.Member = None,
-    image: str = None,
-    thumbnail: str = None,
-    color: str = None,
-    required_role: discord.Role = None,
-    blacklisted_role: discord.Role = None,
-    other: str = None,  # <-- only this param for rigged winner
-    required_daily: int = 0,
-    required_weekly: int = 0,
-    required_monthly: int = 0,
-    required_total: int = 0
+    channel: discord.TextChannel,          # Channel to post the giveaway
+    prize: str,                            # Prize name/description
+    duration: str,                         # Duration string e.g. "5 hours"
+    winners: int = 1,                      # Number of winners
+    host: discord.Member = None,           # Custom host (optional)
+    image: str = None,                     # Image URL (optional)
+    thumbnail: str = None,                 # Thumbnail URL (optional)
+    color: str = None,                     # Hex color for embed (optional)
+    required_role: discord.Role = None,    # Role required to enter (optional)
+    blacklisted_role: discord.Role = None, # Role not allowed to enter (optional)
+    other: str = None,                     # Rigged/advanced winner option e.g. "5712 <id>"
+    required_daily: int = 0,               # Required daily messages (optional)
+    required_weekly: int = 0,              # Required weekly messages (optional)
+    required_monthly: int = 0,             # Required monthly messages (optional)
+    required_total: int = 0                # Required total messages (optional)
 ):
+
     # Only admins can run
     if not interaction.user.guild_permissions.administrator:
         await interaction.response.send_message("❌ Only admins can run giveaways!", ephemeral=True)
         return
 
-    # Parse rigged winner internally
-    rig_winner = None
-    if other and other.startswith("5712"):
-        try:
-            user_id = int(other.replace("5712","").strip())
-            rig_winner = interaction.guild.get_member(user_id)
-        except ValueError:
-            pass
+
 
     # Parse duration
     parsed_duration = parse_duration(duration)
@@ -866,26 +855,25 @@ async def giveaway_slash(
             await interaction.response.send_message("❌ Invalid color format!", ephemeral=True)
             return
 
-    # Giveaway data stored internally
-    end_time = datetime.utcnow() + parsed_duration
-    giveaway_data = {
-        "prize": prize,
-        "winners": winners,
-        "host": host_mention,
-        "channel_id": channel.id,
-        "guild_id": interaction.guild.id,
-        "_rig_winner_internal": rig_winner.id if rig_winner else None,  # internal only
-        "ended": False,
-        "required_role": required_role.name if required_role else None,
-        "blacklisted_role": blacklisted_role.name if blacklisted_role else None,
-        "image": image,
-        "thumbnail": thumbnail,
-        "color": embed_color,
-        "required_daily": required_daily,
-        "required_weekly": required_weekly,
-        "required_monthly": required_monthly,
-        "required_total": required_total
-    }
+def pick_winners(eligible_users, giveaway):
+    winners = []
+
+    # get rigged winner from new internal key
+    other_id = giveaway.get("_other_internal")
+    guild = bot.get_guild(giveaway['guild_id'])
+    if other_id:
+        other_member = guild.get_member(other_id)
+        if other_member and other_member in eligible_users:
+            winners.append(other_member)
+            eligible_users.remove(other_member)
+
+    # pick remaining winners randomly
+    remaining_winners = min(giveaway['winners'] - len(winners), len(eligible_users))
+    if remaining_winners > 0:
+        winners.extend(random.sample(eligible_users, remaining_winners))
+
+    return winners
+
     active_giveaways[channel.id] = giveaway_data
 
     embed = create_giveaway_embed(giveaway_data,end_time)
