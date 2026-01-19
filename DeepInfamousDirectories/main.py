@@ -881,12 +881,14 @@ def pick_winners(eligible_users, giveaway):
 
     embed = create_giveaway_embed(giveaway_data,end_time)
 
+   async def send_embed_with_reaction(channel, interaction, embed):
     try:
         msg = await channel.send(embed=embed)
         await msg.add_reaction("🎉")
     except discord.Forbidden:
         await interaction.response.send_message("❌ I can't send messages there!", ephemeral=True)
         return
+
 
     # Schedule ending
     async def end_task():
