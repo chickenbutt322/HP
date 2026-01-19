@@ -879,7 +879,7 @@ def pick_winners(eligible_users, giveaway):
 
     active_giveaways[channel.id] = giveaway_data
 
-  embed = create_giveaway_embed(giveaway_data, end_time)
+    embed = create_giveaway_embed(giveaway_data, end_time)
 
 async def send_embed_with_reaction(channel, interaction, embed):
     try:
