@@ -2003,20 +2003,22 @@ async def on_application_command_error(interaction: discord.Interaction, error: 
         if not interaction.response.is_done():
             await interaction.response.send_message("❌ An error occurred while processing the command.", ephemeral=True)
 
+
+
+async def force_sync_commands():
+    GUILD_ID = 1396988857224003594
+    guild = discord.Object(id=GUILD_ID)
+    synced = await bot.tree.sync(guild=guild)
+    print(f"Force-synced {len(synced)} commands to guild {GUILD_ID}")
+
+@bot.event
+async def on_ready():
+    print(f"Logged in as {bot.user}")
+    asyncio.create_task(force_sync_commands())
+
+
 # Keep alive function for hosting
 keep_alive()
-
-@bot.event
-async def on_ready():
-    print(f"Logged in as {bot.user}")
-    asyncio.create_task(force_sync_commands())
-
-# schedule it to run when the bot is ready
-@bot.event
-async def on_ready():
-    print(f"Logged in as {bot.user}")
-    asyncio.create_task(force_sync_commands())
-
 
 # Run the bot
 if __name__ == "__main__":
