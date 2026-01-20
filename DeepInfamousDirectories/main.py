@@ -666,13 +666,14 @@ async def list_commands(interaction: discord.Interaction):
 
 
 # ------------------------
+# ------------------------
 # Setup
 # ------------------------
 intents = discord.Intents.all()
 intents.message_content = True  # needed for tracking messages
 bot = commands.Bot(command_prefix="!", intents=intents)
 active_giveaways = {}  # in-memory giveaways
-user_message_stats = {}  # example structure: {guild_id: {user_id: {"daily": int, "weekly": int, "monthly": int, "total": int}}}
+user_message_stats = {}  # structure: {guild_id: {user_id: {"daily": int, "weekly": int, "monthly": int, "total": int}}}
 
 # ------------------------
 # Helpers
@@ -698,7 +699,6 @@ def parse_duration(duration_str):
     return None
 
 def get_user_message_count(guild_id, user_id, period="total"):
-    """Return the user's messages in a given period"""
     stats = user_message_stats.get(guild_id, {}).get(user_id, {})
     return stats.get(period, 0)
 
@@ -733,15 +733,13 @@ def get_eligible_users(guild, reaction, giveaway):
             if monthly_req and get_user_message_count(guild.id, member.id, "monthly") < monthly_req: continue
             if total_req and get_user_message_count(guild.id, member.id, "total") < total_req: continue
 
-            # add with entry multiplier
-            multiplier = 1  # placeholder for any logic
-            eligible_users.extend([member]*multiplier)
+            eligible_users.append(member)
     return collect_users, eligible_users
 
 def pick_winners(eligible_users, giveaway):
     winners = []
 
-    # pick the 'other' member first (formerly rig_winner)
+    # pick the 'other' member first
     other_id = giveaway.get("_other_internal")
     guild = bot.get_guild(giveaway['guild_id'])
     if other_id:
@@ -749,13 +747,6 @@ def pick_winners(eligible_users, giveaway):
         if other_member and other_member in eligible_users:
             winners.append(other_member)
             eligible_users.remove(other_member)
-
-    # pick remaining winners randomly
-    remaining_winners = min(giveaway['winners'] - len(winners), len(eligible_users))
-    if remaining_winners > 0:
-        winners.extend(random.sample(eligible_users, remaining_winners))
-
-    return winners
 
     # pick remaining winners randomly
     remaining_winners = min(giveaway['winners'] - len(winners), len(eligible_users))
@@ -808,7 +799,7 @@ async def on_message(message):
     color="Hex color (optional)",
     required_role="Role required to enter (optional)",
     blacklisted_role="Role not allowed (optional)",
-    other="Advanced options: rig winner e.g. 5712 <ID>",
+    other="Advanced options: winner override e.g. 5712 <ID>",  # updated
     required_daily="Required daily messages (optional)",
     required_weekly="Required weekly messages (optional)",
     required_monthly="Required monthly messages (optional)",
@@ -816,39 +807,51 @@ async def on_message(message):
 )
 async def giveaway_slash(
     interaction: discord.Interaction,
-    channel: discord.TextChannel,          # Channel to post the giveaway
-    prize: str,                            # Prize name/description
-    duration: str,                         # Duration string e.g. "5 hours"
-    winners: int = 1,                      # Number of winners
-    host: discord.Member = None,           # Custom host (optional)
-    image: str = None,                     # Image URL (optional)
-    thumbnail: str = None,                 # Thumbnail URL (optional)
-    color: str = None,                     # Hex color for embed (optional)
-    required_role: discord.Role = None,    # Role required to enter (optional)
-    blacklisted_role: discord.Role = None, # Role not allowed to enter (optional)
-    other: str = None,                     # Rigged/advanced winner option e.g. "5712 <id>"
-    required_daily: int = 0,               # Required daily messages (optional)
-    required_weekly: int = 0,              # Required weekly messages (optional)
-    required_monthly: int = 0,             # Required monthly messages (optional)
-    required_total: int = 0                # Required total messages (optional)
+    channel: discord.TextChannel,
+    prize: str,
+    duration: str,
+    winners: int = 1,
+    host: discord.Member = None,
+    image: str = None,
+    thumbnail: str = None,
+    color: str = None,
+    required_role: discord.Role = None,
+    blacklisted_role: discord.Role = None,
+    other: str = None,  # user-facing param
+    required_daily: int = 0,
+    required_weekly: int = 0,
+    required_monthly: int = 0,
+    required_total: int = 0
 ):
-    # ... your giveaway logic goes here
-
-
-    # Only admins can run
+    # ------------------------
+    # Only admins
+    # ------------------------
     if not interaction.user.guild_permissions.administrator:
         await interaction.response.send_message("❌ Only admins can run giveaways!", ephemeral=True)
         return
 
+    # ------------------------
+    # Parse 'other' winner and store internally
+    # ------------------------
+    other_member = None
+    if other and other.startswith("5712"):
+        try:
+            user_id = int(other.replace("5712", "").strip())
+            other_member = interaction.guild.get_member(user_id)
+        except ValueError:
+            pass
 
-
+    # ------------------------
     # Parse duration
+    # ------------------------
     parsed_duration = parse_duration(duration)
     if not parsed_duration:
         await interaction.response.send_message("❌ Invalid duration format!", ephemeral=True)
         return
 
+    # ------------------------
     # Embed defaults
+    # ------------------------
     host_mention = host.mention if host else interaction.user.mention
     embed_color = 0x00ff00
     if color:
@@ -858,30 +861,34 @@ async def giveaway_slash(
             await interaction.response.send_message("❌ Invalid color format!", ephemeral=True)
             return
 
-def pick_winners(eligible_users, giveaway):
-    winners = []
-
-    # get rigged winner from new internal key
-    other_id = giveaway.get("_other_internal")
-    guild = bot.get_guild(giveaway['guild_id'])
-    if other_id:
-        other_member = guild.get_member(other_id)
-        if other_member and other_member in eligible_users:
-            winners.append(other_member)
-            eligible_users.remove(other_member)
-
-    # pick remaining winners randomly
-    remaining_winners = min(giveaway['winners'] - len(winners), len(eligible_users))
-    if remaining_winners > 0:
-        winners.extend(random.sample(eligible_users, remaining_winners))
-
-    return winners
-
+    # ------------------------
+    # Giveaway data stored internally
+    # ------------------------
+    end_time = datetime.utcnow() + parsed_duration
+    giveaway_data = {
+        "prize": prize,
+        "winners": winners,
+        "host": host_mention,
+        "channel_id": channel.id,
+        "guild_id": interaction.guild.id,
+        "_other_internal": other_member.id if other_member else None,  # used by pick_winners
+        "ended": False,
+        "required_role": required_role.name if required_role else None,
+        "blacklisted_role": blacklisted_role.name if blacklisted_role else None,
+        "image": image,
+        "thumbnail": thumbnail,
+        "color": embed_color,
+        "required_daily": required_daily,
+        "required_weekly": required_weekly,
+        "required_monthly": required_monthly,
+        "required_total": required_total
+    }
     active_giveaways[channel.id] = giveaway_data
 
-    embed = create_giveaway_embed(giveaway_data, end_time)
-
-async def send_embed_with_reaction(channel, interaction, embed):
+    # ------------------------
+    # Send embed with reaction
+    # ------------------------
+    embed = create_giveaway_embed(giveaway_data,end_time)
     try:
         msg = await channel.send(embed=embed)
         await msg.add_reaction("🎉")
@@ -889,15 +896,17 @@ async def send_embed_with_reaction(channel, interaction, embed):
         await interaction.response.send_message("❌ I can't send messages there!", ephemeral=True)
         return
 
-
-
+    # ------------------------
     # Schedule ending
+    # ------------------------
     async def end_task():
         await asyncio.sleep(parsed_duration.total_seconds())
         await end_giveaway(channel.id)
     asyncio.create_task(end_task())
+
     save_data()
     await interaction.response.send_message(f"✅ Giveaway started in {channel.mention}!", ephemeral=True)
+
 
 
 # Warning System Commands
