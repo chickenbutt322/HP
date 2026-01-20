@@ -55,11 +55,12 @@ else:
     logging.warning("⚠️ MONGODB_URI not set - using local JSON storage (data will reset on restart)")
     mongo_client = None
 
-intents = discord.Intents.default()
-intents.members = True
-bot = commands.Bot(command_prefix="!", intents=intents)
-intents.guilds = True
+intents = discord.Intents.all()
 intents.message_content = True
+bot = commands.Bot(command_prefix="!", intents=intents)
+
+# Message stats storage used by giveaways (requirements like daily/weekly/monthly/total)
+user_message_stats = {}  # {guild_id: {user_id: {"daily": int, "weekly": int, "monthly": int, "total": int}}}
 
 
 
@@ -665,22 +666,11 @@ async def list_commands(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-# ------------------------
-# ------------------------
-# Setup
-# ------------------------
-intents = discord.Intents.all()
-intents.message_content = True  # needed for tracking messages
-bot = commands.Bot(command_prefix="!", intents=intents)
-active_giveaways = {}  # in-memory giveaways
-user_message_stats = {}  # structure: {guild_id: {user_id: {"daily": int, "weekly": int, "monthly": int, "total": int}}}
-
-# ------------------------
-# Helpers
-# ------------------------
-def save_data():
-    """Replace with persistent storage logic"""
-    pass
+#
+# NOTE:
+# This file previously re-created `bot = commands.Bot(...)` and re-defined `save_data()` as a no-op.
+# That broke slash commands (Discord would call commands that the *running* bot didn't own) and broke persistence.
+# Keep a single bot instance (defined near the top) and keep the real `save_data()` implementation.
 
 def parse_duration(duration_str):
     """Parse duration string like '5 hours', '2 days', '30 minutes'"""
@@ -2104,7 +2094,6 @@ async def play_song(interaction: discord.Interaction, query: str):
                     'format': 'bestaudio/best',
                     'quiet': True,
                     'no_warnings': True,
-                    'default_search': 'ytsearch' if platform == 'Search' else None,
                 }
                 if platform == 'Search':
                     fallback_opts['default_search'] = 'ytsearch'
@@ -2484,16 +2473,10 @@ async def on_application_command_error(interaction: discord.Interaction, error: 
 
 
 
-async def force_sync_commands():
-    GUILD_ID = 1396988857224003594
-    guild = discord.Object(id=GUILD_ID)
-    synced = await bot.tree.sync(guild=guild)
-    print(f"Force-synced {len(synced)} commands to guild {GUILD_ID}")
-
-@bot.event
-async def on_ready():
-    print(f"Logged in as {bot.user}")
-    asyncio.create_task(force_sync_commands())
+#
+# NOTE:
+# Removed a duplicate `on_ready()` that only force-synced and overwrote the main startup logic.
+# The real startup handler (earlier in this file) loads data and syncs commands.
 
 
 # Keep alive function for hosting
