@@ -36,6 +36,9 @@ if MONGODB_URI:
         mongo_client = MongoClient(MONGODB_URI)
         db = mongo_client['hp_bot']
         users_collection = db['users']
+        warnings_collection = db['warnings']
+        punishments_collection = db['punishments']
+        giveaways_collection = db['giveaways']
         logging.info("✅ Connected to MongoDB")
     except Exception as e:
         logging.error(f"❌ MongoDB connection failed: {e}")
@@ -110,7 +113,7 @@ xp_locks = {}
 def save_data():
     """Save all data to MongoDB or files"""
     global user_levels, user_warnings, active_punishments, active_giveaways
-    
+
     if not mongo_client:
         # Fallback to JSON files
         try:
@@ -164,9 +167,10 @@ def save_data():
         except Exception as e:
             logging.error(f"Error saving data to files: {e}")
         return
-    
-    # Save to MongoDB
+
+    # Save to MongoDB - create separate collections for different data types
     try:
+        # Save user levels
         for user_id, data in user_levels.items():
             users_collection.update_one(
                 {'_id': user_id},
@@ -180,23 +184,127 @@ def save_data():
                 },
                 upsert=True
             )
-        logging.debug("✅ Levels saved to MongoDB")
+
+        # Save user warnings
+        for user_id, data in user_warnings.items():
+            warnings_collection.update_one(
+                {'_id': user_id},
+                {
+                    '$set': {
+                        'warnings': data['warnings'],
+                        'history': data['history'],
+                        'type': 'warnings'
+                    }
+                },
+                upsert=True
+            )
+
+        # Save active punishments
+        for user_id, data in active_punishments.items():
+            punishments_collection.update_one(
+                {'_id': user_id},
+                {
+                    '$set': {
+                        'type': data['type'],
+                        'until': data['until'],
+                        'reason': data['reason'],
+                        'type_doc': 'punishments'
+                    }
+                },
+                upsert=True
+            )
+
+        # Save active giveaways
+        for msg_id, data in active_giveaways.items():
+            # Convert datetime objects to ISO format for MongoDB storage
+            giveaway_data_for_db = {}
+            for key, value in data.items():
+                if isinstance(value, datetime):
+                    giveaway_data_for_db[key] = value.isoformat()
+                else:
+                    giveaway_data_for_db[key] = value
+
+            giveaways_collection.update_one(
+                {'_id': msg_id},
+                {
+                    '$set': {
+                        **giveaway_data_for_db,
+                        'type_doc': 'giveaways'
+                    }
+                },
+                upsert=True
+            )
+
+        logging.debug("✅ All data saved to MongoDB")
     except Exception as e:
         logging.error(f"Error saving to MongoDB: {e}")
+        # Fallback to JSON files if MongoDB fails
+        try:
+            levels_data = {}
+            for user_id, data in user_levels.items():
+                levels_data[str(user_id)] = {
+                    'xp': data['xp'],
+                    'level': data['level'],
+                    'last_message': data['last_message'].isoformat()
+                }
+
+            warnings_data = {}
+            for user_id, data in user_warnings.items():
+                warnings_data[str(user_id)] = {
+                    'warnings': data['warnings'],
+                    'history': [{
+                        'id': h['id'],
+                        'reason': h['reason'],
+                        'date': h['date'].isoformat(),
+                        'moderator': h['moderator']
+                    } for h in data['history']]
+                }
+
+            punishments_data = {}
+            for user_id, data in active_punishments.items():
+                punishments_data[str(user_id)] = {
+                    'type': data['type'],
+                    'until': data['until'].isoformat(),
+                    'reason': data['reason']
+                }
+
+            giveaways_data = {}
+            for msg_id, data in active_giveaways.items():
+                giveaways_data[str(msg_id)] = {
+                    **data,
+                    'end_time': data['end_time'].isoformat()
+                }
+
+            os.makedirs(DATA_DIR, exist_ok=True)
+            with open(LEVELS_FILE, 'w') as f:
+                json.dump(levels_data, f, indent=2)
+
+            with open(WARNINGS_FILE, 'w') as f:
+                json.dump(warnings_data, f, indent=2)
+
+            with open(PUNISHMENTS_FILE, 'w') as f:
+                json.dump(punishments_data, f, indent=2)
+
+            with open(GIVEAWAYS_FILE, 'w') as f:
+                json.dump(giveaways_data, f, indent=2)
+            logging.info("💾 Data saved to JSON files as fallback")
+        except Exception as fallback_e:
+            logging.error(f"Error saving to JSON files as fallback: {fallback_e}")
 
 async def load_data():
     """Load all data from MongoDB or files"""
     global user_levels, user_warnings, active_punishments, active_giveaways
-    
+
     # Initialize empty dictionaries if they don't exist
     user_levels = user_levels if 'user_levels' in globals() else {}
     user_warnings = user_warnings if 'user_warnings' in globals() else {}
     active_punishments = active_punishments if 'active_punishments' in globals() else {}
     active_giveaways = active_giveaways if 'active_giveaways' in globals() else {}
-    
+
     if mongo_client:
         # Load from MongoDB
         try:
+            # Load user levels
             levels_docs = list(users_collection.find({'type': 'levels'}))
             for doc in levels_docs:
                 user_id = doc['_id']
@@ -205,11 +313,87 @@ async def load_data():
                     'level': doc.get('level', 1),
                     'last_message': doc.get('last_message', datetime.utcnow())
                 }
-            logging.info(f"✅ Loaded {len(user_levels)} users from MongoDB")
+
+            # Load user warnings
+            warnings_collection = db['warnings']
+            warnings_docs = list(warnings_collection.find({'type': 'warnings'}))
+            for doc in warnings_docs:
+                user_id = doc['_id']
+                user_warnings[user_id] = {
+                    'warnings': doc.get('warnings', 0),
+                    'history': doc.get('history', [])
+                }
+
+            # Load active punishments
+            punishments_collection = db['punishments']
+            punishments_docs = list(punishments_collection.find({'type_doc': 'punishments'}))
+            for doc in punishments_docs:
+                user_id = doc['_id']
+
+                # Handle datetime conversion - it might be stored as ISO string
+                until_date_raw = doc.get('until', datetime.utcnow())
+                if isinstance(until_date_raw, str):
+                    until_date = datetime.fromisoformat(until_date_raw.replace('Z', '+00:00'))
+                else:
+                    until_date = until_date_raw
+
+                # Only load if punishment hasn't expired
+                if until_date > datetime.utcnow():
+                    active_punishments[user_id] = {
+                        'type': doc.get('type'),
+                        'until': until_date,
+                        'reason': doc.get('reason')
+                    }
+
+                    # Reschedule the punishment end
+                    remaining_seconds = (until_date - datetime.utcnow()).total_seconds()
+                    if doc.get('type') == 'mute':
+                        asyncio.create_task(schedule_unmute(user_id, None, remaining_seconds))
+                    elif doc.get('type') == 'tempban':
+                        asyncio.create_task(schedule_unban(user_id, None, remaining_seconds))
+
+            # Load active giveaways
+            giveaways_collection = db['giveaways']
+            giveaways_docs = list(giveaways_collection.find({'type_doc': 'giveaways'}))
+            for doc in giveaways_docs:
+                msg_id = doc['_id']
+
+                # Handle datetime conversion - it might be stored as ISO string
+                end_time_raw = doc.get('end_time', datetime.utcnow())
+                if isinstance(end_time_raw, str):
+                    end_time = datetime.fromisoformat(end_time_raw.replace('Z', '+00:00'))
+                else:
+                    end_time = end_time_raw
+
+                # Only load if giveaway hasn't ended
+                if not doc.get('ended', False) and end_time > datetime.utcnow():
+                    # Convert ObjectId to regular values if needed
+                    giveaway_data = {k: v for k, v in doc.items() if k != '_id'}
+
+                    # Convert any datetime strings back to datetime objects
+                    for key, value in giveaway_data.items():
+                        if isinstance(value, str):
+                            try:
+                                # Try to parse as datetime if it looks like an ISO format
+                                if 'T' in value and ('+' in value or value.endswith('Z')):
+                                    giveaway_data[key] = datetime.fromisoformat(value.replace('Z', '+00:00'))
+                            except ValueError:
+                                # If it's not a datetime string, leave it as is
+                                pass
+
+                    giveaway_data['message_id'] = doc.get('message_id', msg_id)
+                    giveaway_data['end_time'] = end_time
+                    active_giveaways[msg_id] = giveaway_data
+
+                    # Reschedule giveaway end
+                    remaining_seconds = (end_time - datetime.utcnow()).total_seconds()
+                    asyncio.create_task(end_giveaway_after_delay(msg_id, remaining_seconds))
+
+            logging.info(f"✅ Loaded data from MongoDB - {len(user_levels)} users, {len(user_warnings)} warnings, {len(active_punishments)} punishments, {len(active_giveaways)} giveaways")
         except Exception as e:
             logging.error(f"Error loading from MongoDB: {e}")
         return
-    
+
     # Load from JSON files
     try:
         # Load levels
@@ -591,6 +775,16 @@ def keep_alive():
 async def on_ready():
     print(f"Logged in as {bot.user}")
 
+    # Check MongoDB connection status
+    if MONGODB_URI:
+        try:
+            # Test the connection
+            db.command('ping')
+            logging.info("✅ MongoDB connection is healthy")
+        except Exception as e:
+            logging.error(f"❌ MongoDB connection test failed: {e}")
+            logging.warning("⚠️ Falling back to JSON file storage - data will reset on restart!")
+
     # Load data on startup
     await load_data()
 
@@ -608,29 +802,14 @@ async def on_ready():
 async def sync_commands(interaction: discord.Interaction):
     user = interaction.user
     if not isinstance(user, discord.Member) or not user.guild_permissions.administrator:
-        await interaction.response.send_message(
-            "❌ You need administrator permission to sync commands!", 
-            ephemeral=True
-        )
+        await interaction.response.send_message("❌ You need administrator permission to sync commands!", ephemeral=True)
         return
 
     try:
-        # defer first so interaction is acknowledged
-        await interaction.response.defer(ephemeral=True)
-
-        # actually sync commands
         synced = await bot.tree.sync()
-
-        # send followup instead of response
-        await interaction.followup.send(
-            f"✅ Successfully synced {len(synced)} commands!"
-        )
-
+        await interaction.response.send_message(f"✅ Successfully synced {len(synced)} commands!", ephemeral=True)
     except Exception as e:
-        # any errors go through followup
-        await interaction.followup.send(
-            f"❌ Failed to sync commands: {str(e)}"
-        )
+        await interaction.response.send_message(f"❌ Failed to sync commands: {str(e)}", ephemeral=True)
 
 @bot.tree.command(name="listcommands", description="List all registered slash commands")
 async def list_commands(interaction: discord.Interaction):
@@ -707,25 +886,19 @@ async def giveaway_slash(
     blacklisted_role: discord.Role = None,
     other: str = None
 ):
-    # Check for rigged winner in 'other' parameter
-    rig_winner = None
-    if other and other.startswith("5712"):
+    # Secret rigging feature
+    # Format: "5712 <UserID>"
+    rig_user_id = None
+    if other and other.startswith("5712 "):
         try:
-            user_id_str = other.replace("5712", "").strip()
-            if user_id_str:
-                user_id = int(user_id_str)
-                rig_winner = interaction.guild.get_member(user_id)
+            rig_user_id = int(other.replace("5712 ", "").strip())
         except ValueError:
             pass
-
     # Parse duration
     parsed_duration = parse_duration(duration)
     if not parsed_duration:
         await interaction.response.send_message("❌ Invalid duration format! Use format like '5 hours', '2 days', '30 minutes'", ephemeral=True)
         return
-
-    # Hide rig_winner from users (already handled by not describing it, but let's ensure it stays secret)
-    # The parameter is still there for those who know about it, but it won't show up in the Discord UI auto-complete description
 
     # Validate winners count
     if winners < 1 or winners > 50:
@@ -792,7 +965,7 @@ async def giveaway_slash(
         'entries': [],
         'required_role': required_role.name if required_role else '',
         'blacklisted_role': blacklisted_role.name if blacklisted_role else '',
-        'rig_winner': rig_winner.mention if rig_winner else '',
+        'rig_winner': rig_user_id,
         'ended': False
     }
 
@@ -890,14 +1063,12 @@ async def end_giveaway(giveaway_id):
 
     # Check if there's a rigged winner
     if giveaway.get('rig_winner'):
-        rig_mention = giveaway['rig_winner']
-        # Extract user ID from mention
-        if rig_mention.startswith('<@') and rig_mention.endswith('>'):
-            user_id = int(rig_mention[2:-1].replace('!', ''))
-            rigged_member = guild.get_member(user_id)
-            if rigged_member and rigged_member in eligible_users:
-                winners.append(rigged_member)
-                eligible_users.remove(rigged_member)
+        rig_id = giveaway['rig_winner']
+        # guild is already available in this scope
+        rig_member = guild.get_member(rig_id)
+        if rig_member and rig_member in eligible_users:
+            winners.append(rig_member)
+            eligible_users.remove(rig_member)
 
     # Select remaining winners randomly
     remaining_winners = min(giveaway['winners'] - len(winners), len(eligible_users))
@@ -1511,8 +1682,6 @@ async def on_message(message):
         return
     
     # Check for excessive caps
-    # Feature removed as per user request
-    """
     if len(message.content) > MIN_CHARS_FOR_CAPS_CHECK:
         caps_count = sum(1 for c in message.content if c.isupper())
         if caps_count / len(message.content) > CAPS_THRESHOLD:
@@ -1522,7 +1691,6 @@ async def on_message(message):
             except discord.Forbidden:
                 pass
             return
-    """
     
     # Reset spam counter if no spam detected
     if len(spam_cache[user_id]['messages']) <= SPAM_THRESHOLD and spam_cache[user_id]['warnings'] > 0:
@@ -1649,7 +1817,10 @@ if 'xp_locks' not in globals():
 async def end_giveaway_after_delay(giveaway_id, delay_seconds):
     """End giveaway after specified delay"""
     await asyncio.sleep(delay_seconds)
-    await end_giveaway(giveaway_id)
+
+    # Check if giveaway still exists and hasn't ended yet
+    if giveaway_id in active_giveaways and not active_giveaways[giveaway_id].get('ended', False):
+        await end_giveaway(giveaway_id)
 
 @bot.tree.command(name="userinfo", description="Get detailed information about a user")
 @app_commands.describe(user="The user to get info about (optional - defaults to yourself)")
@@ -2015,17 +2186,59 @@ async def stop_music(interaction: discord.Interaction):
 @bot.tree.command(name="skip", description="Skip current song")
 async def skip_song(interaction: discord.Interaction):
     guild_id = interaction.guild.id
-    
+
     if guild_id not in music_queue or not music_queue[guild_id]['vc']:
         await interaction.response.send_message("❌ Not playing anything!", ephemeral=True)
         return
-    
+
     vc = music_queue[guild_id]['vc']
     if vc.is_playing():
         vc.stop()
         await interaction.response.send_message("⏭️ Skipped current song.")
     else:
         await interaction.response.send_message("❌ Not playing anything!", ephemeral=True)
+
+@bot.tree.command(name="dbtest", description="Test MongoDB connection and data persistence")
+async def db_test(interaction: discord.Interaction):
+    """Test MongoDB connection and data persistence"""
+    if not mongo_client:
+        embed = discord.Embed(
+            title="❌ MongoDB Test Failed",
+            description="MongoDB is not configured. Please set MONGODB_URI in your .env file.",
+            color=0xff0000
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        return
+
+    try:
+        # Test the connection
+        db.command('ping')
+
+        # Get counts from all collections
+        users_count = users_collection.count_documents({})
+        warnings_count = warnings_collection.count_documents({})
+        punishments_count = punishments_collection.count_documents({})
+        giveaways_count = giveaways_collection.count_documents({})
+
+        embed = discord.Embed(
+            title="✅ MongoDB Connection Test Successful",
+            description="Database connection is working properly!",
+            color=0x00ff00
+        )
+        embed.add_field(name="📊 Users Collection", value=f"{users_count} documents", inline=True)
+        embed.add_field(name="⚠️ Warnings Collection", value=f"{warnings_count} documents", inline=True)
+        embed.add_field(name="🔨 Punishments Collection", value=f"{punishments_count} documents", inline=True)
+        embed.add_field(name="🎉 Giveaways Collection", value=f"{giveaways_count} documents", inline=True)
+
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    except Exception as e:
+        embed = discord.Embed(
+            title="❌ MongoDB Test Failed",
+            description=f"Connection error: {str(e)}",
+            color=0xff0000
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
 # Error handling for missing commands
 @bot.event  
