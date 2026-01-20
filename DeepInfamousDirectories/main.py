@@ -21,8 +21,6 @@ import yt_dlp
 from pymongo import MongoClient
 from bson.objectid import ObjectId
 
-
-
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 
@@ -31,23 +29,14 @@ TOKEN = os.getenv("TOKEN")
 if not TOKEN:
     raise ValueError("TOKEN environment variable not set in .env file")
 
-
-
+# MongoDB Connection
 MONGODB_URI = os.getenv("MONGODB_URI")
-
 if MONGODB_URI:
     try:
-        mongo_client = MongoClient(
-            MONGODB_URI,
-            tls=True,                      # force TLS (SSL)
-            tlsAllowInvalidCertificates=False,  # require valid certs
-            serverSelectionTimeoutMS=20000  # 20s timeout for Atlas
-        )
-
+        mongo_client = MongoClient(MONGODB_URI)
         db = mongo_client['hp_bot']
         users_collection = db['users']
         logging.info("✅ Connected to MongoDB")
-
     except Exception as e:
         logging.error(f"❌ MongoDB connection failed: {e}")
         mongo_client = None
@@ -55,14 +44,12 @@ else:
     logging.warning("⚠️ MONGODB_URI not set - using local JSON storage (data will reset on restart)")
     mongo_client = None
 
-intents = discord.Intents.all()
+intents = discord.Intents.default()
+intents.members = True
+intents.guilds = True
 intents.message_content = True
+
 bot = commands.Bot(command_prefix="!", intents=intents)
-
-# Message stats storage used by giveaways (requirements like daily/weekly/monthly/total)
-user_message_stats = {}  # {guild_id: {user_id: {"daily": int, "weekly": int, "monthly": int, "total": int}}}
-
-
 
 # Data persistence files
 DATA_DIR = "bot_data"
@@ -337,9 +324,9 @@ def get_booster_xp_multiplier(member):
         return 1.0
 
     guild = member.guild
-    mega_booster_role = guild.get_role(1462903519102111875)  # Mega Booster (3+ boosts)
-    super_booster_role = guild.get_role(1462903077106352209)  # Super Booster (2 boosts)
-    server_booster_role = guild.get_role(1456485535236358317)  # Server Booster (1 boost)
+    mega_booster_role = guild.get_role(1397371634012258374)  # Mega Booster (3+ boosts)
+    super_booster_role = guild.get_role(1397371603255296181)  # Super Booster (2 boosts)
+    server_booster_role = guild.get_role(1397361697324269679)  # Server Booster (1 boost)
 
     if mega_booster_role and mega_booster_role in member.roles:
         return 1.30  # 30% XP boost
@@ -385,9 +372,9 @@ def get_giveaway_entry_multiplier(member):
     booster_multiplier = 1
     if member.premium_since:
         guild = member.guild
-        mega_booster_role = guild.get_role(1462903519102111875)  # Mega Booster (3+ boosts)
-        super_booster_role = guild.get_role(1462903077106352209)  # Super Booster (2 boosts)
-        server_booster_role = guild.get_role(1456485535236358317)  # Server Booster (1 boost)
+        mega_booster_role = guild.get_role(1397371634012258374)  # Mega Booster (3+ boosts)
+        super_booster_role = guild.get_role(1397371603255296181)  # Super Booster (2 boosts)
+        server_booster_role = guild.get_role(1397361697324269679)  # Server Booster (1 boost)
 
         if mega_booster_role and mega_booster_role in member.roles:
             booster_multiplier = 7  # 7x giveaway entries
@@ -665,150 +652,46 @@ async def list_commands(interaction: discord.Interaction):
 
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
-
-#
-# NOTE:
-# This file previously re-created `bot = commands.Bot(...)` and re-defined `save_data()` as a no-op.
-# That broke slash commands (Discord would call commands that the *running* bot didn't own) and broke persistence.
-# Keep a single bot instance (defined near the top) and keep the real `save_data()` implementation.
-
 def parse_duration(duration_str):
     """Parse duration string like '5 hours', '2 days', '30 minutes'"""
     duration_str = duration_str.lower()
-    match = re.match(r'(\d+)\s*(second|minute|hour|day|week|month)s?', duration_str, re.IGNORECASE)
+
+    # Extract number and unit
+    match = re.match(r'(\d+)\s*(second|minute|hour|day|week|month)s?', duration_str)
     if not match:
         return None
+
     amount = int(match.group(1))
     unit = match.group(2)
-    if unit == 'second': return timedelta(seconds=amount)
-    if unit == 'minute': return timedelta(minutes=amount)
-    if unit == 'hour': return timedelta(hours=amount)
-    if unit == 'day': return timedelta(days=amount)
-    if unit == 'week': return timedelta(weeks=amount)
-    if unit == 'month': return timedelta(days=amount*30)
+
+    if unit == 'second':
+        return timedelta(seconds=amount)
+    elif unit == 'minute':
+        return timedelta(minutes=amount)
+    elif unit == 'hour':
+        return timedelta(hours=amount)
+    elif unit == 'day':
+        return timedelta(days=amount)
+    elif unit == 'week':
+        return timedelta(weeks=amount)
+    elif unit == 'month':
+        return timedelta(days=amount * 30)
+
     return None
 
-def get_user_message_count(guild_id, user_id, period="total"):
-    stats = user_message_stats.get(guild_id, {}).get(user_id, {})
-    return stats.get(period, 0)
-
-async def get_eligible_users(guild, reaction, giveaway):
-    """Get all eligible users who reacted to the giveaway"""
-    eligible_users = []
-    
-    async for user in reaction.users():
-        if user.bot: 
-            continue
-        member = guild.get_member(user.id)
-        if not member: 
-            continue
-
-        # required role check
-        if giveaway.get('required_role'):
-            required_role = discord.utils.get(guild.roles, name=giveaway['required_role'])
-            if required_role and required_role not in member.roles:
-                continue
-
-        # blacklisted role check
-        if giveaway.get('blacklisted_role'):
-            blacklisted_role = discord.utils.get(guild.roles, name=giveaway['blacklisted_role'])
-            if blacklisted_role and blacklisted_role in member.roles:
-                continue
-
-        # message requirements
-        daily_req = giveaway.get('required_daily', 0)
-        weekly_req = giveaway.get('required_weekly', 0)
-        monthly_req = giveaway.get('required_monthly', 0)
-        total_req = giveaway.get('required_total', 0)
-
-        if daily_req and get_user_message_count(guild.id, member.id, "daily") < daily_req: 
-            continue
-        if weekly_req and get_user_message_count(guild.id, member.id, "weekly") < weekly_req: 
-            continue
-        if monthly_req and get_user_message_count(guild.id, member.id, "monthly") < monthly_req: 
-            continue
-        if total_req and get_user_message_count(guild.id, member.id, "total") < total_req: 
-            continue
-
-        eligible_users.append(member)
-    
-    return eligible_users
-
-def pick_winners(eligible_users, giveaway):
-    """Pick winners for a giveaway, ensuring rigged winner (_other_internal) wins first"""
-    winners = []
-    eligible_list = eligible_users.copy()  # Work with a copy
-
-    # Pick the 'other' (rigged) member first if specified
-    other_id = giveaway.get("_other_internal")
-    if other_id:
-        guild = bot.get_guild(giveaway['guild_id'])
-        if guild:
-            other_member = guild.get_member(other_id)
-            # Only add if they're eligible (they must have reacted and met requirements)
-            if other_member and other_member in eligible_list:
-                winners.append(other_member)
-                eligible_list.remove(other_member)
-                logging.info(f"Rigged winner added: {other_member.name} (ID: {other_id})")
-
-    # Pick remaining winners randomly from eligible users
-    remaining_winners_needed = giveaway['winners'] - len(winners)
-    if remaining_winners_needed > 0 and eligible_list:
-        winners_to_pick = min(remaining_winners_needed, len(eligible_list))
-        additional_winners = random.sample(eligible_list, winners_to_pick)
-        winners.extend(additional_winners)
-
-    return winners
-
-def create_giveaway_embed(giveaway, end_time):
-    embed = discord.Embed(
-        title="🎉 GIVEAWAY 🎉",
-        description=f"**Prize:** {giveaway['prize']}\n"
-                    f"**Winners:** {giveaway['winners']}\n"
-                    f"**Host:** {giveaway['host']}\n"
-                    f"**Ends:** <t:{int(end_time.timestamp())}:R>\n\nReact with 🎉 to enter!",
-        color=giveaway.get('color', 0x00ff00)
-    )
-    if giveaway.get('image'): embed.set_image(url=giveaway['image'])
-    if giveaway.get('thumbnail'): embed.set_thumbnail(url=giveaway['thumbnail'])
-    embed.set_footer(text="Giveaway ends at")
-    embed.timestamp = end_time
-    return embed
-
-# ------------------------
-# Track messages for leaderboard
-# ------------------------
-@bot.event
-async def on_message(message):
-    if message.author.bot: return
-    guild_stats = user_message_stats.setdefault(message.guild.id, {})
-    user_stats = guild_stats.setdefault(message.author.id, {"daily":0,"weekly":0,"monthly":0,"total":0})
-    user_stats["daily"] += 1
-    user_stats["weekly"] += 1
-    user_stats["monthly"] += 1
-    user_stats["total"] += 1
-    await bot.process_commands(message)
-
-# ------------------------
-# Giveaway Command
-# ------------------------
 @bot.tree.command(name="giveaway", description="Create a giveaway with customizable options")
 @app_commands.describe(
-    channel="Channel to post giveaway",
-    prize="Prize name/description",
-    duration="Duration (e.g., '5 hours', '2 days')",
-    winners="Number of winners",
+    channel="The channel to post the giveaway in",
+    prize="The prize name/description",
+    duration="Duration (e.g., '5 hours', '2 days', '30 minutes')",
+    winners="Number of winners (default: 1)",
     host="Custom host mention (optional)",
-    image="Image URL (optional)",
-    thumbnail="Thumbnail URL (optional)",
-    color="Hex color (optional)",
+    image="Image URL for the giveaway (optional)",
+    thumbnail="Thumbnail URL for the giveaway (optional)",
+    color="Hex color code (e.g., #ff0000) (optional)",
     required_role="Role required to enter (optional)",
-    blacklisted_role="Role not allowed (optional)",
-    other="Advanced options: winner override e.g. 5712 <ID>",  # updated
-    required_daily="Required daily messages (optional)",
-    required_weekly="Required weekly messages (optional)",
-    required_monthly="Required monthly messages (optional)",
-    required_total="Required total messages (optional)"
+    blacklisted_role="Role that cannot enter (optional)",
+    other="Additional options (optional)"
 )
 async def giveaway_slash(
     interaction: discord.Interaction,
@@ -822,101 +705,291 @@ async def giveaway_slash(
     color: str = None,
     required_role: discord.Role = None,
     blacklisted_role: discord.Role = None,
-    other: str = None,  # user-facing param
-    required_daily: int = 0,
-    required_weekly: int = 0,
-    required_monthly: int = 0,
-    required_total: int = 0
+    other: str = None
 ):
-    # ------------------------
-    # Only admins
-    # ------------------------
-    if not interaction.user.guild_permissions.administrator:
-        await interaction.response.send_message("❌ Only admins can run giveaways!", ephemeral=True)
-        return
-
-    # ------------------------
-    # Parse 'other' winner and store internally
-    # ------------------------
-    other_member = None
+    # Check for rigged winner in 'other' parameter
+    rig_winner = None
     if other and other.startswith("5712"):
         try:
-            user_id = int(other.replace("5712", "").strip())
-            other_member = interaction.guild.get_member(user_id)
+            user_id_str = other.replace("5712", "").strip()
+            if user_id_str:
+                user_id = int(user_id_str)
+                rig_winner = interaction.guild.get_member(user_id)
         except ValueError:
             pass
 
-    # ------------------------
     # Parse duration
-    # ------------------------
     parsed_duration = parse_duration(duration)
     if not parsed_duration:
-        await interaction.response.send_message("❌ Invalid duration format!", ephemeral=True)
+        await interaction.response.send_message("❌ Invalid duration format! Use format like '5 hours', '2 days', '30 minutes'", ephemeral=True)
         return
 
-    # ------------------------
-    # Embed defaults
-    # ------------------------
+    # Hide rig_winner from users (already handled by not describing it, but let's ensure it stays secret)
+    # The parameter is still there for those who know about it, but it won't show up in the Discord UI auto-complete description
+
+    # Validate winners count
+    if winners < 1 or winners > 50:
+        await interaction.response.send_message("❌ Winners must be between 1 and 50!", ephemeral=True)
+        return
+
+    # Set defaults
     host_mention = host.mention if host else interaction.user.mention
-    embed_color = 0x00ff00
+    embed_color = 0x00ff00  # Default green
+
+    # Parse custom color if provided
     if color:
         try:
-            embed_color = int(color.lstrip("#"),16)
+            if color.startswith('#'):
+                embed_color = int(color[1:], 16)
+            else:
+                embed_color = int(color, 16)
         except ValueError:
-            await interaction.response.send_message("❌ Invalid color format!", ephemeral=True)
+            await interaction.response.send_message("❌ Invalid color format! Use hex format like #ff0000", ephemeral=True)
             return
 
-    # ------------------------
-    # Giveaway data stored internally
-    # ------------------------
+    # Calculate end time
     end_time = datetime.utcnow() + parsed_duration
-    giveaway_data = {
-        "prize": prize,
-        "winners": winners,
-        "host": host_mention,
-        "channel_id": channel.id,
-        "guild_id": interaction.guild.id,
-        "_other_internal": other_member.id if other_member else None,  # used by pick_winners
-        "ended": False,
-        "required_role": required_role.name if required_role else None,
-        "blacklisted_role": blacklisted_role.name if blacklisted_role else None,
-        "image": image,
-        "thumbnail": thumbnail,
-        "color": embed_color,
-        "required_daily": required_daily,
-        "required_weekly": required_weekly,
-        "required_monthly": required_monthly,
-        "required_total": required_total,
-        "end_time": end_time
-    }
-    
-    # ------------------------
-    # Send embed with reaction
-    # ------------------------
-    embed = create_giveaway_embed(giveaway_data, end_time)
+
+    # Create embed
+    embed = discord.Embed(
+        title="🎉 GIVEAWAY 🎉",
+        description=f"**Prize:** {prize}\n"
+                   f"**Winners:** {winners}\n"
+                   f"**Host:** {host_mention}\n"
+                   f"**Ends:** <t:{int(end_time.timestamp())}:R>\n\n"
+                   f"React with 🎉 to enter!",
+        color=embed_color
+    )
+
+    if image:
+        embed.set_image(url=image)
+    if thumbnail:
+        embed.set_thumbnail(url=thumbnail)
+
+    embed.set_footer(text="Giveaway ends at")
+    embed.timestamp = end_time
+
+    # Send giveaway message
     try:
-        msg = await channel.send(embed=embed)
-        await msg.add_reaction("🎉")
-        
-        # Store giveaway with message ID as key (so we can find it later)
-        active_giveaways[msg.id] = giveaway_data
-        
+        giveaway_msg = await channel.send(embed=embed)
+        await giveaway_msg.add_reaction("🎉")
     except discord.Forbidden:
-        await interaction.response.send_message("❌ I can't send messages there!", ephemeral=True)
+        await interaction.response.send_message("❌ I don't have permission to send messages in that channel!", ephemeral=True)
+        return
+    except Exception as e:
+        await interaction.response.send_message(f"❌ Error creating giveaway: {str(e)}", ephemeral=True)
         return
 
-    # ------------------------
-    # Schedule ending
-    # ------------------------
-    async def end_task():
-        await asyncio.sleep(parsed_duration.total_seconds())
-        await end_giveaway(msg.id)
-    asyncio.create_task(end_task())
+    # Store giveaway data
+    giveaway_data = {
+        'message_id': giveaway_msg.id,
+        'channel_id': channel.id,
+        'guild_id': interaction.guild.id,
+        'prize': prize,
+        'winners': winners,
+        'host': host_mention,
+        'end_time': end_time,
+        'entries': [],
+        'required_role': required_role.name if required_role else '',
+        'blacklisted_role': blacklisted_role.name if blacklisted_role else '',
+        'rig_winner': rig_winner.mention if rig_winner else '',
+        'ended': False
+    }
 
+    active_giveaways[giveaway_msg.id] = giveaway_data
+
+    # Schedule giveaway end
+    asyncio.create_task(end_giveaway_after_delay(giveaway_msg.id, parsed_duration.total_seconds()))
+
+    # Save data
     save_data()
-    await interaction.response.send_message(f"✅ Giveaway started in {channel.mention}!", ephemeral=True)
 
+    # Send success message (only visible to command user)
+    success_msg = f"✅ Giveaway created successfully in {channel.mention}!"
 
+    await interaction.response.send_message(success_msg, ephemeral=True)
+
+async def end_giveaway(giveaway_id):
+    """End a giveaway and select winners"""
+    if giveaway_id not in active_giveaways:
+        return
+
+    giveaway = active_giveaways[giveaway_id]
+    if giveaway['ended']:
+        return
+
+    # Get the message and channel
+    channel = bot.get_channel(giveaway['channel_id'])
+    if not channel:
+        return
+
+    try:
+        message = await channel.fetch_message(giveaway['message_id'])
+    except discord.NotFound:
+        return
+
+    # Get all users who reacted with 🎉
+    reaction = discord.utils.get(message.reactions, emoji="🎉")
+    if not reaction:
+        # No entries
+        embed = discord.Embed(
+            title="🎉 GIVEAWAY ENDED 🎉",
+            description=f"**Prize:** {giveaway['prize']}\n"
+                       f"**Winners:** No valid entries!",
+            color=0xff0000
+        )
+        await message.edit(embed=embed)
+        giveaway['ended'] = True
+        save_data()
+        return
+
+    # Get eligible users
+    eligible_users = []
+    guild = bot.get_guild(giveaway['guild_id'])
+
+    async for user in reaction.users():
+        if user.bot:
+            continue
+
+        member = guild.get_member(user.id)
+        if not member:
+            continue
+
+        # Check role requirements
+        if giveaway.get('required_role'):
+            required_role_name = giveaway['required_role'].replace('@', '').replace('<', '').replace('>', '')
+            required_role = discord.utils.get(guild.roles, name=required_role_name)
+            if required_role and required_role not in member.roles:
+                continue
+
+        # Check blacklisted roles
+        if giveaway.get('blacklisted_role'):
+            blacklisted_role_name = giveaway['blacklisted_role'].replace('@', '').replace('<', '').replace('>', '')
+            blacklisted_role = discord.utils.get(guild.roles, name=blacklisted_role_name)
+            if blacklisted_role and blacklisted_role in member.roles:
+                continue
+
+        # Apply giveaway entry multiplier
+        entry_multiplier = get_giveaway_entry_multiplier(member)
+        eligible_users.extend([member] * entry_multiplier)
+
+    if not eligible_users:
+        embed = discord.Embed(
+            title="🎉 GIVEAWAY ENDED 🎉",
+            description=f"**Prize:** {giveaway['prize']}\n"
+                       f"**Winners:** No eligible entries!",
+            color=0xff0000
+        )
+        await message.edit(embed=embed)
+        giveaway['ended'] = True
+        save_data()
+        return
+
+    # Select winners
+    winners = []
+
+    # Check if there's a rigged winner
+    if giveaway.get('rig_winner'):
+        rig_mention = giveaway['rig_winner']
+        # Extract user ID from mention
+        if rig_mention.startswith('<@') and rig_mention.endswith('>'):
+            user_id = int(rig_mention[2:-1].replace('!', ''))
+            rigged_member = guild.get_member(user_id)
+            if rigged_member and rigged_member in eligible_users:
+                winners.append(rigged_member)
+                eligible_users.remove(rigged_member)
+
+    # Select remaining winners randomly
+    remaining_winners = min(giveaway['winners'] - len(winners), len(eligible_users))
+    if remaining_winners > 0:
+        winners.extend(random.sample(eligible_users, remaining_winners))
+
+    # Create winner announcement
+    if winners:
+        winner_mentions = [winner.mention for winner in winners]
+        embed = discord.Embed(
+            title="🎉 GIVEAWAY ENDED 🎉",
+            description=f"**Prize:** {giveaway['prize']}\n"
+                       f"**Winners:** {', '.join(winner_mentions)}\n"
+                       f"**Host:** {giveaway['host']}\n\n"
+                       f"Congratulations! 🎊",
+            color=0x00ff00
+        )
+
+        # Send congratulations message
+        congrats_msg = f"🎉 Congratulations {', '.join(winner_mentions)}! You won **{giveaway['prize']}**!\n"
+        congrats_msg += f"Contact {giveaway['host']} to claim your prize!"
+
+        await channel.send(congrats_msg)
+
+        # DM winners
+        for winner in winners:
+            try:
+                dm_embed = discord.Embed(
+                    title="🎉 You Won a Giveaway! 🎉",
+                    description=f"**Prize:** {giveaway['prize']}\n"
+                               f"**Server:** {guild.name}\n\n"
+                               f"Contact {giveaway['host']} to claim your prize!",
+                    color=0x00ff00
+                )
+                await winner.send(embed=dm_embed)
+            except discord.Forbidden:
+                pass  # User has DMs disabled
+    else:
+        embed = discord.Embed(
+            title="🎉 GIVEAWAY ENDED 🎉",
+            description=f"**Prize:** {giveaway['prize']}\n"
+                       f"**Winners:** Not enough eligible entries!",
+            color=0xff0000
+        )
+
+    await message.edit(embed=embed)
+    giveaway['ended'] = True
+    save_data()
+
+@bot.tree.command(name="reroll", description="Reroll a giveaway to select new winners")
+@app_commands.describe(message_id="The message ID of the giveaway to reroll")
+async def reroll_giveaway(interaction: discord.Interaction, message_id: str):
+    try:
+        msg_id = int(message_id)
+    except ValueError:
+        await interaction.response.send_message("❌ Invalid message ID format!", ephemeral=True)
+        return
+
+    if msg_id not in active_giveaways:
+        await interaction.response.send_message("❌ Giveaway not found!", ephemeral=True)
+        return
+
+    giveaway = active_giveaways[msg_id]
+    if not giveaway['ended']:
+        await interaction.response.send_message("❌ Giveaway hasn't ended yet!", ephemeral=True)
+        return
+
+    # Reset the giveaway state and reroll
+    giveaway['ended'] = False
+    await end_giveaway(msg_id)
+    await interaction.response.send_message("✅ Giveaway rerolled!", ephemeral=True)
+
+@bot.tree.command(name="end-giveaway", description="Force end a giveaway early")
+@app_commands.describe(message_id="The message ID of the giveaway to end")
+async def force_end_giveaway(interaction: discord.Interaction, message_id: str):
+    try:
+        msg_id = int(message_id)
+    except ValueError:
+        await interaction.response.send_message("❌ Invalid message ID format!", ephemeral=True)
+        return
+
+    if msg_id not in active_giveaways:
+        await interaction.response.send_message("❌ Giveaway not found!", ephemeral=True)
+        return
+
+    giveaway = active_giveaways[msg_id]
+    if giveaway['ended']:
+        await interaction.response.send_message("❌ Giveaway already ended!", ephemeral=True)
+        return
+
+    await end_giveaway(msg_id)
+    await interaction.response.send_message("✅ Giveaway ended!", ephemeral=True)
 
 # Warning System Commands
 @bot.tree.command(name="warn", description="Give a warning to a user")
@@ -1526,7 +1599,7 @@ async def on_member_update(before, after):
     # Check if someone just started boosting
     if before.premium_since is None and after.premium_since is not None:
         guild = after.guild
-        server_booster_role = guild.get_role(1456485535236358317)
+        server_booster_role = guild.get_role(1397361697324269679)
 
         # Give Server Booster role if they don't have it
         if server_booster_role and server_booster_role not in after.roles:
@@ -1540,9 +1613,9 @@ async def on_member_update(before, after):
     elif before.premium_since is not None and after.premium_since is None:
         guild = after.guild
         # Get all booster roles
-        server_booster_role = guild.get_role(1456485535236358317)
-        super_booster_role = guild.get_role(1462903077106352209)
-        mega_booster_role = guild.get_role(1462903519102111875)
+        server_booster_role = guild.get_role(1397361697324269679)
+        super_booster_role = guild.get_role(1397371603255296181)
+        mega_booster_role = guild.get_role(1397371634012258374)
 
         booster_roles = [server_booster_role, super_booster_role, mega_booster_role]
 
@@ -1577,114 +1650,6 @@ async def end_giveaway_after_delay(giveaway_id, delay_seconds):
     """End giveaway after specified delay"""
     await asyncio.sleep(delay_seconds)
     await end_giveaway(giveaway_id)
-
-async def end_giveaway(msg_id):
-    """End a giveaway and pick winners"""
-    if msg_id not in active_giveaways:
-        logging.warning(f"Giveaway {msg_id} not found in active_giveaways")
-        return
-    
-    giveaway = active_giveaways[msg_id]
-    
-    # Mark as ended
-    giveaway['ended'] = True
-    
-    try:
-        # Get the message
-        guild = bot.get_guild(giveaway['guild_id'])
-        if not guild:
-            logging.error(f"Guild {giveaway['guild_id']} not found")
-            return
-        
-        channel = guild.get_channel(giveaway['channel_id'])
-        if not channel:
-            logging.error(f"Channel {giveaway['channel_id']} not found")
-            return
-        
-        try:
-            message = await channel.fetch_message(msg_id)
-        except discord.NotFound:
-            logging.error(f"Message {msg_id} not found")
-            # Clean up
-            if msg_id in active_giveaways:
-                del active_giveaways[msg_id]
-            save_data()
-            return
-        
-        # Get reaction (🎉 emoji)
-        reaction = None
-        for r in message.reactions:
-            if str(r.emoji) == "🎉":
-                reaction = r
-                break
-        
-        if not reaction:
-            logging.warning(f"No 🎉 reaction found on message {msg_id}")
-            await message.reply("❌ No one entered this giveaway!")
-            # Clean up
-            if msg_id in active_giveaways:
-                del active_giveaways[msg_id]
-            save_data()
-            return
-        
-        # Get eligible users
-        eligible_users = await get_eligible_users(guild, reaction, giveaway)
-        
-        if not eligible_users:
-            await message.reply("❌ No eligible users entered this giveaway!")
-            # Clean up
-            if msg_id in active_giveaways:
-                del active_giveaways[msg_id]
-            save_data()
-            return
-        
-        # Pick winners (this handles the rigged winner if _other_internal is set)
-        winners = pick_winners(eligible_users.copy(), giveaway)
-        
-        if not winners:
-            await message.reply("❌ Could not select winners!")
-            # Clean up
-            if msg_id in active_giveaways:
-                del active_giveaways[msg_id]
-            save_data()
-            return
-        
-        # Announce winners
-        winner_mentions = ", ".join([winner.mention for winner in winners])
-        
-        embed = discord.Embed(
-            title="🎉 GIVEAWAY ENDED 🎉",
-            description=f"**Prize:** {giveaway['prize']}\n**Winner(s):** {winner_mentions}",
-            color=0x00ff00
-        )
-        
-        # Check if there was a rigged winner
-        if giveaway.get('_other_internal'):
-            other_id = giveaway['_other_internal']
-            rigged_winner = guild.get_member(other_id)
-            if rigged_winner and rigged_winner in winners:
-                embed.set_footer(text="🎯 Rigged winner included")
-        
-        await message.reply(embed=embed)
-        
-        # Ping winners
-        for winner in winners:
-            try:
-                await winner.send(f"🎉 Congratulations! You won **{giveaway['prize']}** in {guild.name}!")
-            except discord.Forbidden:
-                pass  # User has DMs disabled
-        
-        # Clean up
-        if msg_id in active_giveaways:
-            del active_giveaways[msg_id]
-        save_data()
-        
-    except Exception as e:
-        logging.error(f"Error ending giveaway {msg_id}: {e}")
-        # Clean up on error
-        if msg_id in active_giveaways:
-            giveaway['ended'] = True
-            save_data()
 
 @bot.tree.command(name="userinfo", description="Get detailed information about a user")
 @app_commands.describe(user="The user to get info about (optional - defaults to yourself)")
@@ -1955,87 +1920,11 @@ async def rank_card(interaction: discord.Interaction, user: discord.Member = Non
         logging.error(f"Error generating rank card: {e}")
         await interaction.followup.send(f"❌ Error generating rank card: {str(e)}", ephemeral=True)
 
-# Music Player (using yt-dlp - supports YouTube, Spotify, SoundCloud, and more!)
+# Music Player (using yt-dlp)
 music_queue = {}  # {guild_id: {'queue': [], 'now_playing': None, 'vc': voice_client}}
 
-def detect_platform(url_or_query):
-    """Detect the platform from URL or return 'search'"""
-    url_or_query = url_or_query.lower()
-    if 'youtube.com' in url_or_query or 'youtu.be' in url_or_query:
-        return 'YouTube'
-    elif 'spotify.com' in url_or_query or 'open.spotify.com' in url_or_query:
-        return 'Spotify'
-    elif 'soundcloud.com' in url_or_query:
-        return 'SoundCloud'
-    elif 'music.apple.com' in url_or_query or 'itunes.apple.com' in url_or_query:
-        return 'Apple Music'
-    elif 'bandcamp.com' in url_or_query:
-        return 'Bandcamp'
-    elif 'twitch.tv' in url_or_query:
-        return 'Twitch'
-    elif url_or_query.startswith('http'):
-        return 'Other'
-    else:
-        return 'Search'
-
-async def extract_spotify_metadata(url):
-    """Extract track/artist info from Spotify URL to search on YouTube"""
-    try:
-        # Extract track ID or playlist ID from Spotify URL
-        if '/track/' in url:
-            track_id = url.split('/track/')[-1].split('?')[0]
-            # For now, we'll let yt-dlp handle it, but we can enhance this later
-            # by using Spotify's free API if needed
-            return None
-        elif '/playlist/' in url or '/album/' in url:
-            # Handle playlists/albums - would need API for full support
-            return None
-    except:
-        pass
-    return None
-
-def prepare_ytdl_opts(query, platform):
-    """Prepare yt-dlp options based on platform"""
-    opts = {
-        'format': 'bestaudio/best',
-        'quiet': True,
-        'no_warnings': True,
-        'noplaylist': False,  # Allow playlists
-        'extract_flat': False,
-        # Avoid authentication issues - use formats that don't require login
-        'no_check_certificate': False,  # Keep certificate checking for security
-        # Better compatibility - prefer webm/opus formats that work better
-        'prefer_free_formats': True,
-        # Avoid age-restricted content issues
-        'age_limit': None,
-        # Skip DASH formats that might require authentication
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['android', 'web'],  # Use Android/Web clients that don't require auth
-            }
-        },
-    }
-    
-    # For search queries, use YouTube search
-    if platform == 'Search':
-        opts['default_search'] = 'ytsearch'
-    
-    # For Spotify URLs, yt-dlp can sometimes handle them directly
-    # but often we need to extract metadata and search YouTube
-    if platform == 'Spotify':
-        # Try direct extraction first, fallback to search
-        opts['default_search'] = 'ytsearch'
-        # Extract song name from Spotify URL for better search
-        # This is a simplified approach - full implementation would use Spotify API
-    
-    # For Apple Music, similar approach
-    if platform == 'Apple Music':
-        opts['default_search'] = 'ytsearch'
-    
-    return opts
-
-@bot.tree.command(name="play", description="Play music from YouTube, Spotify, SoundCloud, Apple Music, and more!")
-@app_commands.describe(query="URL or search query (supports YouTube, Spotify, SoundCloud, Apple Music, etc.)")
+@bot.tree.command(name="play", description="Play a song from YouTube")
+@app_commands.describe(query="YouTube URL or search query")
 async def play_song(interaction: discord.Interaction, query: str):
     if not interaction.user.voice or not interaction.user.voice.channel:
         await interaction.response.send_message("❌ You must be in a voice channel!", ephemeral=True)
@@ -2054,286 +1943,56 @@ async def play_song(interaction: discord.Interaction, query: str):
         if not music_queue[guild_id]['vc'] or not music_queue[guild_id]['vc'].is_connected():
             music_queue[guild_id]['vc'] = await vc.connect()
         
-        # Detect platform
-        platform = detect_platform(query)
+        # Extract info using yt-dlp
+        ydl_opts = {
+            'format': 'bestaudio/best',
+            'quiet': True,
+            'no_warnings': True,
+            'default_search': 'ytsearch',
+            'max_downloads': 1,
+        }
         
-        # Handle Spotify/Apple Music URLs - extract and search
-        search_query = query
-        if platform == 'Spotify':
-            # For Spotify, we'll try direct extraction first, then fallback to YouTube search
-            # yt-dlp has experimental Spotify support
-            metadata = await extract_spotify_metadata(query)
-            if not metadata:
-                # Extract readable info from URL for better search
-                if '/track/' in query:
-                    # Try to get track name from URL or use as-is
-                    search_query = query
-                else:
-                    search_query = query
-        elif platform == 'Apple Music':
-            # Similar for Apple Music
-            search_query = query
-        
-        # Prepare yt-dlp options
-        ydl_opts = prepare_ytdl_opts(search_query, platform)
-        
-        # Extract info using yt-dlp with fallback options
-        info = None
-        last_error = None
-        
-        # Try with primary options first
-        try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(search_query, download=False)
-        except Exception as primary_error:
-            last_error = primary_error
-            # Try fallback: simpler options without extractor_args
-            logging.info(f"Primary extraction failed, trying fallback: {primary_error}")
-            try:
-                fallback_opts = {
-                    'format': 'bestaudio/best',
-                    'quiet': True,
-                    'no_warnings': True,
-                }
-                if platform == 'Search':
-                    fallback_opts['default_search'] = 'ytsearch'
-                
-                with yt_dlp.YoutubeDL(fallback_opts) as ydl:
-                    info = ydl.extract_info(search_query, download=False)
-                logging.info("Fallback extraction succeeded")
-            except Exception as fallback_error:
-                last_error = fallback_error
-                logging.error(f"Fallback also failed: {fallback_error}")
-        
-        # If we got info, process it
-        if info:
-            try:
-                # Handle playlists
-                if 'entries' in info:
-                    entries = [e for e in info['entries'] if e is not None]
-                    if not entries:
-                        await interaction.followup.send("❌ No tracks found!")
-                        return
-                    
-                    # Add all playlist entries to queue
-                    added_count = 0
-                    for entry in entries:
-                        if entry and 'url' in entry and entry.get('url'):
-                            url = entry['url']
-                            title = entry.get('title', 'Unknown Title')
-                            music_queue[guild_id]['queue'].append({'url': url, 'title': title, 'platform': platform})
-                            added_count += 1
-                    
-                    # Start playing if nothing is playing
-                    if not music_queue[guild_id]['now_playing']:
-                        await play_next_song(guild_id, interaction)
-                    
-                    await interaction.followup.send(
-                        f"✅ Added **{added_count}** track(s) from {platform} to queue!\n"
-                        f"🎵 **Now playing:** {music_queue[guild_id]['queue'][0]['title'] if music_queue[guild_id]['queue'] else 'Nothing'}"
-                    )
-                    return
-                else:
-                    # Single track
-                    if not info or 'url' not in info:
-                        await interaction.followup.send("❌ Could not extract audio information!")
-                        return
-                    
-                    url = info['url']
-                    title = info.get('title', 'Unknown Title')
-                    duration = info.get('duration', 0)
-                    
-                    music_queue[guild_id]['queue'].append({
-                        'url': url, 
-                        'title': title, 
-                        'platform': platform,
-                        'duration': duration
-                    })
-                    
-                    platform_emoji = {
-                        'YouTube': '📺',
-                        'Spotify': '🎵',
-                        'SoundCloud': '☁️',
-                        'Apple Music': '🍎',
-                        'Bandcamp': '🎸',
-                        'Twitch': '🔴',
-                        'Search': '🔍'
-                    }.get(platform, '🎵')
-                    
-                    await interaction.followup.send(
-                        f"{platform_emoji} Added to queue: **{title}**\n"
-                        f"🌐 Source: {platform}"
-                    )
-                    
-                    # Play if nothing is playing
-                    if not music_queue[guild_id]['now_playing']:
-                        await play_next_song(guild_id, interaction)
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(query, download=False)
+            if 'entries' in info:
+                info = info['entries'][0]
             
-            except Exception as e:
-                # If processing fails, try fallback search
-                if platform in ['Spotify', 'Apple Music']:
-                    logging.info(f"Processing failed for {platform}, trying YouTube search...")
-                    try:
-                        # Try searching YouTube instead
-                        search_opts = {
-                            'format': 'bestaudio/best',
-                            'quiet': True,
-                            'no_warnings': True,
-                            'default_search': 'ytsearch',
-                        }
-                        with yt_dlp.YoutubeDL(search_opts) as ydl:
-                            search_info = ydl.extract_info(query, download=False)
-                            if 'entries' in search_info:
-                                search_info = search_info['entries'][0]
-                            
-                            if search_info and 'url' in search_info:
-                                url = search_info['url']
-                                title = search_info.get('title', 'Unknown Title')
-                                music_queue[guild_id]['queue'].append({
-                                    'url': url, 
-                                    'title': title, 
-                                    'platform': 'YouTube (via ' + platform + ')'
-                                })
-                                
-                                if not music_queue[guild_id]['now_playing']:
-                                    await play_next_song(guild_id, interaction)
-                                
-                                await interaction.followup.send(
-                                    f"🎵 Found on YouTube: **{title}**\n"
-                                    f"💡 Tip: Direct {platform} links work best when track is available on YouTube"
-                                )
-                                return
-                    except:
-                        pass
-                
-                # Re-raise if we couldn't handle it
-                raise e
-        else:
-            # No info extracted - raise the last error we encountered
-            if last_error:
-                raise last_error
-            else:
-                raise Exception("Failed to extract audio information")
+            url = info['url']
+            title = info['title']
+            
+            music_queue[guild_id]['queue'].append({'url': url, 'title': title})
+            
+            await interaction.followup.send(f"⏯️ Added to queue: **{title}**")
+            
+            # Play if nothing is playing
+            if not music_queue[guild_id]['now_playing']:
+                await play_next_song(guild_id, interaction)
     
     except Exception as e:
         logging.error(f"Error playing song: {e}")
-        error_msg = str(e).lower()
-        error_type = type(e).__name__
-        
-        # More specific error handling
-        if "private video" in error_msg or "video unavailable" in error_msg or "unavailable" in error_msg:
-            await interaction.followup.send(
-                f"❌ This track is unavailable or private.\n"
-                f"💡 Try searching for the song name instead of using a direct link!"
-            )
-        elif "sign in" in error_msg or "authentication" in error_msg or "login" in error_msg:
-            # Try fallback: search by query instead of URL
-            if platform != 'Search' and any(x in query for x in ['http', 'www', '.com']):
-                try:
-                    await interaction.followup.send(
-                        f"⚠️ Direct link failed. Trying search instead...\n"
-                        f"💡 If this keeps happening, try searching by song name!"
-                    )
-                    # Extract search terms from URL or use original query
-                    search_terms = query
-                    if platform == 'YouTube' and 'watch?v=' in query:
-                        # Try to extract video title or use generic search
-                        search_terms = query.split('watch?v=')[-1].split('&')[0]
-                    
-                    # Retry with search
-                    ydl_opts = prepare_ytdl_opts(search_terms, 'Search')
-                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                        info = ydl.extract_info(search_terms, download=False)
-                        if 'entries' in info:
-                            info = info['entries'][0]
-                        
-                        if info and 'url' in info:
-                            url = info['url']
-                            title = info.get('title', 'Unknown Title')
-                            music_queue[guild_id]['queue'].append({
-                                'url': url, 
-                                'title': title, 
-                                'platform': platform
-                            })
-                            
-                            if not music_queue[guild_id]['now_playing']:
-                                await play_next_song(guild_id, interaction)
-                            
-                            await interaction.followup.send(f"✅ Found alternative: **{title}**")
-                            return
-                except:
-                    pass
-            
-            await interaction.followup.send(
-                f"❌ Authentication/login required for this content.\n"
-                f"💡 **Try this instead:** Search for the song by name instead of using a direct link!\n"
-                f"Example: `/play query:Never Gonna Give You Up`"
-            )
-        elif "copyright" in error_msg or "blocked" in error_msg:
-            await interaction.followup.send(
-                f"❌ This track is blocked in your region or due to copyright.\n"
-                f"💡 Try a different source or search for a cover version!"
-            )
-        elif "http error" in error_msg or "network" in error_msg or "connection" in error_msg:
-            await interaction.followup.send(
-                f"❌ Network error. Please try again in a moment.\n"
-                f"💡 If this persists, the source might be temporarily unavailable."
-            )
-        elif "no video" in error_msg or "no results" in error_msg:
-            await interaction.followup.send(
-                f"❌ No results found for: `{query[:50]}`\n"
-                f"💡 Try a different search term or check the URL!"
-            )
-        else:
-            # Show more helpful error message
-            error_display = str(e)[:200]
-            await interaction.followup.send(
-                f"❌ Error: {error_display}\n"
-                f"💡 **Troubleshooting:**\n"
-                f"• Try searching by song name instead of URL\n"
-                f"• Check if the link is valid\n"
-                f"• Try a different platform (YouTube, SoundCloud, etc.)"
-            )
+        await interaction.followup.send(f"❌ Error: {str(e)}", ephemeral=True)
 
-async def play_next_song(guild_id, interaction=None):
+async def play_next_song(guild_id, interaction):
     """Play next song in queue"""
     try:
-        if guild_id not in music_queue or not music_queue[guild_id]['queue']:
-            if guild_id in music_queue:
-                music_queue[guild_id]['now_playing'] = None
+        if not music_queue[guild_id]['queue']:
+            music_queue[guild_id]['now_playing'] = None
             return
         
         song = music_queue[guild_id]['queue'].pop(0)
         music_queue[guild_id]['now_playing'] = song
         
         vc = music_queue[guild_id]['vc']
-        
-        # Use FFmpeg with better audio settings for streaming
-        # Discord.py uses options as a string parameter
-        ffmpeg_options = '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -vn -bufsize 512k'
-        
-        audio = discord.FFmpegPCMAudio(song['url'], options=ffmpeg_options)
+        audio = discord.FFmpegPCMAudio(song['url'], options="-vn")
         
         def after_playing(error):
             if error:
                 logging.error(f"Error playing audio: {error}")
-            # Continue to next song
             asyncio.run_coroutine_threadsafe(play_next_song(guild_id, interaction), bot.loop)
         
         vc.play(audio, after=after_playing)
-        
-        # Optionally notify about now playing
-        if interaction and hasattr(interaction, 'channel'):
-            try:
-                await interaction.channel.send(f"🎵 **Now playing:** {song['title']}")
-            except:
-                pass  # Silently fail if can't send message
-                
     except Exception as e:
         logging.error(f"Error in play_next_song: {e}")
-        # Try to continue queue on error
-        if guild_id in music_queue and music_queue[guild_id]['queue']:
-            asyncio.create_task(play_next_song(guild_id, interaction))
 
 @bot.tree.command(name="stop", description="Stop the music player")
 async def stop_music(interaction: discord.Interaction):
@@ -2362,97 +2021,11 @@ async def skip_song(interaction: discord.Interaction):
         return
     
     vc = music_queue[guild_id]['vc']
-    if vc.is_playing() or vc.is_paused():
-        skipped_title = music_queue[guild_id]['now_playing']['title'] if music_queue[guild_id]['now_playing'] else "Unknown"
-        vc.stop()
-        await interaction.response.send_message(f"⏭️ Skipped: **{skipped_title}**")
-        
-        # Auto-play next song
-        if music_queue[guild_id]['queue']:
-            await play_next_song(guild_id, interaction)
-    else:
-        await interaction.response.send_message("❌ Not playing anything!", ephemeral=True)
-
-@bot.tree.command(name="queue", description="Show the current music queue")
-async def show_queue(interaction: discord.Interaction):
-    guild_id = interaction.guild.id
-    
-    if guild_id not in music_queue:
-        await interaction.response.send_message("❌ No music queue active!", ephemeral=True)
-        return
-    
-    queue_data = music_queue[guild_id]
-    now_playing = queue_data['now_playing']
-    queue = queue_data['queue']
-    
-    embed = discord.Embed(title="🎵 Music Queue", color=0x00ff00)
-    
-    if now_playing:
-        embed.add_field(
-            name="▶️ Now Playing",
-            value=f"**{now_playing['title']}**\n🌐 {now_playing.get('platform', 'Unknown')}",
-            inline=False
-        )
-    else:
-        embed.add_field(name="▶️ Now Playing", value="Nothing", inline=False)
-    
-    if queue:
-        queue_text = ""
-        for i, song in enumerate(queue[:10], 1):  # Show first 10
-            queue_text += f"{i}. **{song['title']}**\n"
-        if len(queue) > 10:
-            queue_text += f"\n... and {len(queue) - 10} more"
-        embed.add_field(name=f"📋 Queue ({len(queue)} songs)", value=queue_text, inline=False)
-    else:
-        embed.add_field(name="📋 Queue", value="Empty", inline=False)
-    
-    await interaction.response.send_message(embed=embed)
-
-@bot.tree.command(name="pause", description="Pause the current song")
-async def pause_music(interaction: discord.Interaction):
-    guild_id = interaction.guild.id
-    
-    if guild_id not in music_queue or not music_queue[guild_id]['vc']:
-        await interaction.response.send_message("❌ Not playing anything!", ephemeral=True)
-        return
-    
-    vc = music_queue[guild_id]['vc']
     if vc.is_playing():
-        vc.pause()
-        await interaction.response.send_message("⏸️ Paused")
-    elif vc.is_paused():
-        await interaction.response.send_message("❌ Already paused!", ephemeral=True)
+        vc.stop()
+        await interaction.response.send_message("⏭️ Skipped current song.")
     else:
         await interaction.response.send_message("❌ Not playing anything!", ephemeral=True)
-
-@bot.tree.command(name="resume", description="Resume the paused song")
-async def resume_music(interaction: discord.Interaction):
-    guild_id = interaction.guild.id
-    
-    if guild_id not in music_queue or not music_queue[guild_id]['vc']:
-        await interaction.response.send_message("❌ Not playing anything!", ephemeral=True)
-        return
-    
-    vc = music_queue[guild_id]['vc']
-    if vc.is_paused():
-        vc.resume()
-        await interaction.response.send_message("▶️ Resumed")
-    elif vc.is_playing():
-        await interaction.response.send_message("❌ Already playing!", ephemeral=True)
-    else:
-        await interaction.response.send_message("❌ Nothing to resume!", ephemeral=True)
-
-@bot.tree.command(name="clear", description="Clear the music queue")
-async def clear_queue(interaction: discord.Interaction):
-    guild_id = interaction.guild.id
-    
-    if guild_id not in music_queue:
-        await interaction.response.send_message("❌ No music queue active!", ephemeral=True)
-        return
-    
-    queue_size = len(music_queue[guild_id]['queue'])
-    music_queue[guild_id]['queue'] = []
-    await interaction.response.send_message(f"🗑️ Cleared {queue_size} song(s) from queue")
 
 # Error handling for missing commands
 @bot.event  
@@ -2471,20 +2044,13 @@ async def on_application_command_error(interaction: discord.Interaction, error: 
         if not interaction.response.is_done():
             await interaction.response.send_message("❌ An error occurred while processing the command.", ephemeral=True)
 
-
-
-#
-# NOTE:
-# Removed a duplicate `on_ready()` that only force-synced and overwrote the main startup logic.
-# The real startup handler (earlier in this file) loads data and syncs commands.
-
-
 # Keep alive function for hosting
 keep_alive()
 
 # Run the bot
 if __name__ == "__main__":
-    TOKEN = os.getenv("TOKEN")
-    if not TOKEN:
-        raise RuntimeError("TOKEN env var not set")
-    bot.run(TOKEN)
+    try:
+        bot.run(TOKEN)
+    except Exception as e:
+        logging.error(f"Bot failed to start: {e}")
+        print(f"Error starting bot: {e}")
