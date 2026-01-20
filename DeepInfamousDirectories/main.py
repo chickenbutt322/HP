@@ -39,6 +39,8 @@ if MONGODB_URI:
         warnings_collection = db['warnings']
         punishments_collection = db['punishments']
         giveaways_collection = db['giveaways']
+        invites_collection = db['invites']
+        messages_collection = db['messages']
         logging.info("✅ Connected to MongoDB")
     except Exception as e:
         logging.error(f"❌ MongoDB connection failed: {e}")
@@ -51,6 +53,7 @@ intents = discord.Intents.default()
 intents.members = True
 intents.guilds = True
 intents.message_content = True
+intents.invites = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
@@ -152,6 +155,11 @@ def save_data():
                     'end_time': data['end_time'].isoformat()
                 }
 
+            # Prepare invites data
+            invites_data = {}
+            for user_id, data in invite_counts.items():
+                invites_data[str(user_id)] = data
+
             os.makedirs(DATA_DIR, exist_ok=True)
             with open(LEVELS_FILE, 'w') as f:
                 json.dump(levels_data, f, indent=2)
@@ -164,6 +172,17 @@ def save_data():
 
             with open(GIVEAWAYS_FILE, 'w') as f:
                 json.dump(giveaways_data, f, indent=2)
+
+            with open(INVITES_FILE, 'w') as f:
+                json.dump(invites_data, f, indent=2)
+
+            # Prepare messages data
+            messages_data = {}
+            for user_id, data in message_counts.items():
+                messages_data[str(user_id)] = data
+
+            with open(MESSAGES_FILE, 'w') as f:
+                json.dump(messages_data, f, indent=2)
         except Exception as e:
             logging.error(f"Error saving data to files: {e}")
         return
@@ -235,6 +254,39 @@ def save_data():
                 upsert=True
             )
 
+        # Save invite data
+        invites_collection = db['invites']
+        for user_id, data in invite_counts.items():
+            invites_collection.update_one(
+                {'_id': user_id},
+                {
+                    '$set': {
+                        'invites': data['invites'],
+                        'inviter': data.get('inviter'),
+                        'type': 'invites'
+                    }
+                },
+                upsert=True
+            )
+
+        # Save message data
+        messages_collection = db['messages']
+        for user_id, data in message_counts.items():
+            messages_collection.update_one(
+                {'_id': user_id},
+                {
+                    '$set': {
+                        'total': data.get('total', 0),
+                        'daily': data.get('daily', 0),
+                        'weekly': data.get('weekly', 0),
+                        'monthly': data.get('monthly', 0),
+                        'last_message_date': data.get('last_message_date'),
+                        'type': 'messages'
+                    }
+                },
+                upsert=True
+            )
+
         logging.debug("✅ All data saved to MongoDB")
     except Exception as e:
         logging.error(f"Error saving to MongoDB: {e}")
@@ -287,6 +339,22 @@ def save_data():
 
             with open(GIVEAWAYS_FILE, 'w') as f:
                 json.dump(giveaways_data, f, indent=2)
+
+            # Prepare invites data
+            invites_data = {}
+            for user_id, data in invite_counts.items():
+                invites_data[str(user_id)] = data
+
+            with open(INVITES_FILE, 'w') as f:
+                json.dump(invites_data, f, indent=2)
+
+            # Prepare messages data
+            messages_data = {}
+            for user_id, data in message_counts.items():
+                messages_data[str(user_id)] = data
+
+            with open(MESSAGES_FILE, 'w') as f:
+                json.dump(messages_data, f, indent=2)
             logging.info("💾 Data saved to JSON files as fallback")
         except Exception as fallback_e:
             logging.error(f"Error saving to JSON files as fallback: {fallback_e}")
@@ -389,7 +457,30 @@ async def load_data():
                     remaining_seconds = (end_time - datetime.utcnow()).total_seconds()
                     asyncio.create_task(end_giveaway_after_delay(msg_id, remaining_seconds))
 
-            logging.info(f"✅ Loaded data from MongoDB - {len(user_levels)} users, {len(user_warnings)} warnings, {len(active_punishments)} punishments, {len(active_giveaways)} giveaways")
+            # Load invite data
+            invites_collection = db['invites']
+            invites_docs = list(invites_collection.find({'type': 'invites'}))
+            for doc in invites_docs:
+                user_id = doc['_id']
+                invite_counts[user_id] = {
+                    'invites': doc.get('invites', 0),
+                    'inviter': doc.get('inviter')
+                }
+
+            # Load message data
+            messages_collection = db['messages']
+            messages_docs = list(messages_collection.find({'type': 'messages'}))
+            for doc in messages_docs:
+                user_id = doc['_id']
+                message_counts[user_id] = {
+                    'total': doc.get('total', 0),
+                    'daily': doc.get('daily', 0),
+                    'weekly': doc.get('weekly', 0),
+                    'monthly': doc.get('monthly', 0),
+                    'last_message_date': doc.get('last_message_date')
+                }
+
+            logging.info(f"✅ Loaded data from MongoDB - {len(user_levels)} users, {len(user_warnings)} warnings, {len(active_punishments)} punishments, {len(active_giveaways)} giveaways, {len(invite_counts)} invite records, {len(message_counts)} message records")
         except Exception as e:
             logging.error(f"Error loading from MongoDB: {e}")
         return
@@ -473,6 +564,37 @@ async def load_data():
                             # Reschedule giveaway end
                             remaining_seconds = (end_time - datetime.utcnow()).total_seconds()
                             asyncio.create_task(end_giveaway_after_delay(msg_id, remaining_seconds))
+
+        # Load invites
+        if os.path.exists(INVITES_FILE):
+            with open(INVITES_FILE, 'r') as f:
+                file_content = f.read().strip()
+                if file_content:
+                    data = json.loads(file_content)
+                    invite_counts = {}
+                    for user_id_str, invite_data in data.items():
+                        user_id = int(user_id_str)
+                        invite_counts[user_id] = {
+                            'invites': invite_data['invites'],
+                            'inviter': invite_data.get('inviter')
+                        }
+
+        # Load messages
+        if os.path.exists(MESSAGES_FILE):
+            with open(MESSAGES_FILE, 'r') as f:
+                file_content = f.read().strip()
+                if file_content:
+                    data = json.loads(file_content)
+                    message_counts = {}
+                    for user_id_str, message_data in data.items():
+                        user_id = int(user_id_str)
+                        message_counts[user_id] = {
+                            'total': message_data.get('total', 0),
+                            'daily': message_data.get('daily', 0),
+                            'weekly': message_data.get('weekly', 0),
+                            'monthly': message_data.get('monthly', 0),
+                            'last_message_date': message_data.get('last_message_date')
+                        }
 
     except Exception as e:
         logging.error(f"Error loading data: {e}")
@@ -1263,6 +1385,184 @@ async def list_giveaways(interaction: discord.Interaction):
 
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
+@bot.tree.command(name="invites", description="Check how many invites a user has")
+@app_commands.describe(user="The user to check invites for (optional - defaults to yourself)")
+async def check_invites(interaction: discord.Interaction, user: discord.Member = None):
+    """Check how many invites a user has"""
+    target_user = user or interaction.user
+
+    # Get invite count for the user
+    user_invite_data = invite_counts.get(target_user.id, {'invites': 0, 'inviter': None})
+    invite_count = user_invite_data['invites']
+
+    # Get who invited this user (if known)
+    inviter_id = user_invite_data.get('inviter')
+    inviter_mention = "Unknown"
+
+    if inviter_id:
+        inviter = interaction.guild.get_member(inviter_id)
+        if inviter:
+            inviter_mention = inviter.mention
+        else:
+            inviter_mention = f"User ID: {inviter_id}"
+
+    # Create embed
+    embed = discord.Embed(
+        title=f"📨 Invite Statistics for {target_user.display_name}",
+        color=target_user.color if target_user.color.value != 0 else 0x7289da
+    )
+
+    embed.add_field(name="🎯 Invites Sent", value=f"**{invite_count}** people", inline=True)
+    embed.add_field(name="👤 Invited By", value=inviter_mention, inline=True)
+
+    # Add some context about invite tracking
+    embed.set_footer(text="Note: Invite tracking started when this system was implemented")
+
+    await interaction.response.send_message(embed=embed)
+
+
+@bot.tree.command(name="invite-leaderboard", description="Show invite leaderboards")
+@app_commands.describe(type="Type of invites to show")
+@app_commands.choices(type=[
+    app_commands.Choice(name="Total Invites", value="total"),
+    app_commands.Choice(name="Real Invites", value="real")
+])
+async def invite_leaderboard(interaction: discord.Interaction, type: app_commands.Choice[str]):
+    """Show invite leaderboards for total and real invites"""
+    invite_type = type.value
+
+    if invite_type == "total":
+        # Sort users by total invites
+        sorted_users = sorted(
+            invite_counts.items(),
+            key=lambda x: x[1]['invites'] if 'invites' in x[1] else 0,
+            reverse=True
+        )
+
+        # Get top 10 users
+        top_users = sorted_users[:10]
+
+        if not top_users:
+            await interaction.response.send_message("❌ No invites recorded yet!", ephemeral=True)
+            return
+
+        # Create leaderboard text
+        leaderboard_text = ""
+        medals = ["🥇", "🥈", "🥉"]
+
+        for i, (user_id, data) in enumerate(top_users):
+            user = interaction.guild.get_member(user_id)
+            if user:
+                count = data['invites'] if 'invites' in data else 0
+                medal = medals[i] if i < 3 else f"#{i+1}"
+                leaderboard_text += f"{medal} **{user.display_name}** - {count} invites\n"
+
+        embed = discord.Embed(
+            title="📊 Total Invite Leaderboard",
+            description=leaderboard_text or "No users found!",
+            color=0x00ff00
+        )
+        embed.set_footer(text="Total invites include all invites (regular, left, fake)")
+
+    elif invite_type == "real":
+        # For real invites, we need to calculate based on members still in the server
+        # We'll iterate through all invite records and count only those who are still in the server
+        real_invite_counts = {}
+
+        # Get all members currently in the guild
+        current_members = {member.id for member in interaction.guild.members}
+
+        # Count how many of the invited users are still in the server
+        for invited_user_id, data in invite_counts.items():
+            # Check if this user was invited by someone
+            inviter_id = data.get('inviter')
+            if inviter_id:
+                # Check if the invited user is still in the server
+                if invited_user_id in current_members:
+                    # Increment the inviter's real invite count
+                    if inviter_id not in real_invite_counts:
+                        real_invite_counts[inviter_id] = 0
+                    real_invite_counts[inviter_id] += 1
+
+        # Sort users by real invites
+        sorted_users = sorted(
+            real_invite_counts.items(),
+            key=lambda x: x[1],
+            reverse=True
+        )
+
+        # Get top 10 users
+        top_users = sorted_users[:10]
+
+        if not top_users:
+            await interaction.response.send_message("❌ No real invites recorded yet!", ephemeral=True)
+            return
+
+        # Create leaderboard text
+        leaderboard_text = ""
+        medals = ["🥇", "🥈", "🥉"]
+
+        for i, (user_id, count) in enumerate(top_users):
+            user = interaction.guild.get_member(user_id)
+            if user:
+                medal = medals[i] if i < 3 else f"#{i+1}"
+                leaderboard_text += f"{medal} **{user.display_name}** - {count} real invites\n"
+
+        embed = discord.Embed(
+            title="📊 Real Invite Leaderboard",
+            description=leaderboard_text or "No users found!",
+            color=0x00ff00
+        )
+        embed.set_footer(text="Real invites: People who joined and stayed in the server")
+
+    await interaction.response.send_message(embed=embed)
+
+
+@bot.tree.command(name="message-leaderboard", description="Show message leaderboards")
+@app_commands.describe(period="Time period for the leaderboard")
+@app_commands.choices(period=[
+    app_commands.Choice(name="Daily", value="daily"),
+    app_commands.Choice(name="Weekly", value="weekly"),
+    app_commands.Choice(name="Monthly", value="monthly"),
+    app_commands.Choice(name="Total", value="total")
+])
+async def message_leaderboard(interaction: discord.Interaction, period: app_commands.Choice[str]):
+    """Show message leaderboards for different time periods"""
+    period_key = period.value
+
+    # Sort users by message count for the specified period
+    sorted_users = sorted(
+        message_counts.items(),
+        key=lambda x: x[1].get(period_key, 0),
+        reverse=True
+    )
+
+    # Get top 10 users
+    top_users = sorted_users[:10]
+
+    if not top_users:
+        await interaction.response.send_message(f"❌ No messages recorded for {period_key} period yet!", ephemeral=True)
+        return
+
+    # Create leaderboard text
+    leaderboard_text = ""
+    medals = ["🥇", "🥈", "🥉"]
+
+    for i, (user_id, data) in enumerate(top_users):
+        user = interaction.guild.get_member(user_id)
+        if user:
+            count = data.get(period_key, 0)
+            medal = medals[i] if i < 3 else f"#{i+1}"
+            leaderboard_text += f"{medal} **{user.display_name}** - {count} messages\n"
+
+    embed = discord.Embed(
+        title=f"📊 {period_key.capitalize()} Message Leaderboard",
+        description=leaderboard_text or "No users found!",
+        color=0x00ff00
+    )
+
+    await interaction.response.send_message(embed=embed)
+
 # Warning System Commands
 @bot.tree.command(name="warn", description="Give a warning to a user")
 @app_commands.describe(
@@ -1587,7 +1887,7 @@ async def unmute_user(interaction: discord.Interaction, user: discord.Member):
 async def unban_user(interaction: discord.Interaction, user_id: str):
     moderator = interaction.user
     if not isinstance(moderator, discord.Member) or not moderator.guild_permissions.ban_members:
-        await interaction.response.send_message("❌ You don't have permission to unban users!", ephemeral=True)
+        await interaction.response.send_message("�� You don't have permission to unban users!", ephemeral=True)
         return
 
     try:
@@ -1813,6 +2113,38 @@ async def on_message(message):
     if len(message.content) > 100:
         base_xp += random.randint(5, 15)
 
+    # Update message counts
+    current_date = datetime.utcnow().date()
+    if user_id not in message_counts:
+        message_counts[user_id] = {
+            'total': 0,
+            'daily': 0,
+            'weekly': 0,
+            'monthly': 0,
+            'last_message_date': str(current_date)
+        }
+
+    # Check if we need to reset counters based on date
+    last_date_str = message_counts[user_id].get('last_message_date', str(current_date))
+    last_date = datetime.strptime(last_date_str, '%Y-%m-%d').date()
+
+    # Reset daily counter if it's a new day
+    if current_date > last_date:
+        message_counts[user_id]['daily'] = 0
+        # Reset weekly counter if it's a new week
+        if current_date.isocalendar()[1] > last_date.isocalendar()[1]:
+            message_counts[user_id]['weekly'] = 0
+        # Reset monthly counter if it's a new month
+        if current_date.month > last_date.month or current_date.year > last_date.year:
+            message_counts[user_id]['monthly'] = 0
+
+    # Update all message counters
+    message_counts[user_id]['total'] += 1
+    message_counts[user_id]['daily'] += 1
+    message_counts[user_id]['weekly'] += 1
+    message_counts[user_id]['monthly'] += 1
+    message_counts[user_id]['last_message_date'] = str(current_date)
+
     # Add XP and check for level up
     level_up, xp_gained = await add_xp(user_id, base_xp, message.author)
 
@@ -1828,11 +2160,11 @@ async def on_message(message):
         booster_info = ""
         if progress['booster_multiplier'] > 1.0:
             booster_bonus = int((progress['booster_multiplier'] - 1.0) * 100)
-            embed.add_field(name="💎 Booster Bonus", 
+            embed.add_field(name="💎 Booster Bonus",
                            value=f"**+{booster_bonus}% XP** from boosting!",
                            inline=True)
 
-        embed.add_field(name="📊 Stats", 
+        embed.add_field(name="📊 Stats",
                        value=f"**Total XP:** {progress['current_xp']:,}\n"
                              f"**XP Multiplier:** {progress['multiplier']:.2f}x",
                        inline=True)
@@ -1897,6 +2229,111 @@ async def on_member_update(before, after):
             except discord.Forbidden:
                 print(f"Failed to remove booster roles from {after.name} - missing permissions")
 
+
+# Invite tracking functionality
+@bot.event
+async def on_invite_create(invite):
+    """Cache invite when it's created"""
+    guild_id = invite.guild.id
+    if guild_id not in cached_invites:
+        cached_invites[guild_id] = {}
+    cached_invites[guild_id][invite.code] = invite.uses or 0
+
+@bot.event
+async def on_invite_delete(invite):
+    """Remove invite from cache when it's deleted"""
+    guild_id = invite.guild.id
+    if guild_id in cached_invites and invite.code in cached_invites[guild_id]:
+        del cached_invites[guild_id][invite.code]
+
+async def get_invite_used(member):
+    """Determine which invite was used by a member joining the server"""
+    guild = member.guild
+    guild_id = guild.id
+
+    # Get current invites
+    try:
+        current_invites = await guild.invites()
+    except discord.Forbidden:
+        # If bot doesn't have permission to view invites, return None
+        return None
+
+    # Initialize cached invites for this guild if needed
+    if guild_id not in cached_invites:
+        cached_invites[guild_id] = {}
+        # Cache current invites
+        for invite in current_invites:
+            cached_invites[guild_id][invite.code] = invite.uses or 0
+        return None  # Can't determine for first tracking
+
+    # Find the invite that was used
+    for invite in current_invites:
+        cached_uses = cached_invites[guild_id].get(invite.code, 0)
+        if invite.uses and invite.uses > cached_uses:
+            # This is the invite that was used
+            cached_invites[guild_id][invite.code] = invite.uses
+            return invite
+
+    # If no invite was incremented, try to find one that matches the approximate creation time
+    join_time = member.joined_at or discord.utils.snowflake_time(member.id)
+    for invite in current_invites:
+        # If invite was created close to the member's join time, it might be the vanity or temporary one
+        if abs((invite.created_at - join_time).total_seconds()) < 30:  # Within 30 seconds
+            cached_invites[guild_id][invite.code] = invite.uses or 0
+            return invite
+
+    return None
+
+@bot.event
+async def on_message_delete(message):
+    """Store deleted messages for snipe command"""
+    # Don't store bot messages or DMs
+    if message.author.bot or not message.guild:
+        return
+
+    # Store the deleted message
+    deleted_messages[message.channel.id] = {
+        'content': message.content,
+        'author': message.author.display_name,
+        'timestamp': datetime.utcnow(),
+        'author_avatar': str(message.author.avatar.url) if message.author.avatar else None
+    }
+
+@bot.event
+async def on_member_join(member):
+    """Track when a member joins to attribute to the correct inviter"""
+    if member.bot:
+        return  # Don't track bots
+
+    # Get the invite used
+    invite_used = await get_invite_used(member)
+
+    if invite_used and invite_used.inviter:
+        inviter_id = invite_used.inviter.id
+
+        # Update the inviter's invite count
+        if inviter_id not in invite_counts:
+            invite_counts[inviter_id] = {'invites': 0, 'inviter': None}
+
+        invite_counts[inviter_id]['invites'] += 1
+
+        # Track who was invited by whom
+        if member.id not in invite_counts:
+            invite_counts[member.id] = {'invites': 0, 'inviter': inviter_id}
+        else:
+            invite_counts[member.id]['inviter'] = inviter_id
+
+        # Save data
+        save_data()
+
+        logging.info(f"Member {member} joined using invite from {invite_used.inviter} (now has {invite_counts[inviter_id]['invites']} invites)")
+    else:
+        # Track the member but without an inviter
+        if member.id not in invite_counts:
+            invite_counts[member.id] = {'invites': 0, 'inviter': None}
+
+        logging.info(f"Member {member} joined but couldn't determine invite source")
+
 # Additional fun features
 # Storage for polls and reminders  
 active_polls = {}
@@ -1913,6 +2350,22 @@ if 'active_giveaways' not in globals():
     active_giveaways = {}
 if 'xp_locks' not in globals():
     xp_locks = {}
+if 'invite_counts' not in globals():
+    invite_counts = {}  # {user_id: {'invites': count, 'inviter': inviter_id}}
+if 'cached_invites' not in globals():
+    cached_invites = {}  # {guild_id: {invite_code: uses_count}}
+
+# Message tracking for leaderboards
+if 'message_counts' not in globals():
+    message_counts = {}  # {user_id: {'total': count, 'daily': count, 'weekly': count, 'monthly': count, 'last_message_date': date_str}}
+
+# Deleted message tracking for snipe command
+if 'deleted_messages' not in globals():
+    deleted_messages = {}  # {channel_id: {'content': str, 'author': str, 'timestamp': datetime}}
+
+# Invite tracking data persistence files
+INVITES_FILE = f"{DATA_DIR}/user_invites.json"
+MESSAGES_FILE = f"{DATA_DIR}/user_messages.json"
 
 # Fix undefined variables
 async def end_giveaway_after_delay(giveaway_id, delay_seconds):
@@ -2096,21 +2549,44 @@ async def create_poll(
     for i in range(len(options)):
         await poll_message.add_reaction(number_emojis[i])
 
-@bot.tree.command(name="level", description="Check your or someone else's level and XP")
-@app_commands.describe(user="User to check level for (optional)")
-async def check_level(interaction: discord.Interaction, user: discord.Member = None):
+@bot.tree.command(name="snipe", description="Show the last deleted message in this channel")
+async def snipe(interaction: discord.Interaction):
+    """Show the last deleted message in the current channel"""
+    channel_id = interaction.channel.id
+
+    if channel_id not in deleted_messages:
+        await interaction.response.send_message("❌ No deleted messages to snipe in this channel!", ephemeral=True)
+        return
+
+    deleted_msg = deleted_messages[channel_id]
+
+    embed = discord.Embed(
+        title="🗑️ Sniped Message",
+        description=deleted_msg['content'],
+        color=0xff0000,
+        timestamp=deleted_msg['timestamp']
+    )
+
+    embed.set_author(name=deleted_msg['author'])
+    embed.set_footer(text=f"Deleted at")
+
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="rank", description="Check your or someone else's rank and XP")
+@app_commands.describe(user="User to check rank for (optional)")
+async def check_rank(interaction: discord.Interaction, user: discord.Member = None):
     target_user = user or interaction.user
     progress = get_level_progress(target_user.id, target_user)
-    
+
     embed = discord.Embed(
-        title=f"📊 Level Stats for {target_user.display_name}",
+        title=f"📊 Rank Stats for {target_user.display_name}",
         color=target_user.color if target_user.color.value != 0 else 0x7289da
     )
-    
+
     embed.add_field(name="📈 Level", value=f"**{progress['level']}**", inline=True)
     embed.add_field(name="✨ Total XP", value=f"**{progress['current_xp']:,}**", inline=True)
     embed.add_field(name="🚀 XP Multiplier", value=f"**{progress['multiplier']:.2f}x**", inline=True)
-    
+
     # Progress bar
     progress_bar = "▓" * int(progress['progress_percent'] / 10) + "░" * (10 - int(progress['progress_percent'] / 10))
     embed.add_field(
@@ -2119,38 +2595,38 @@ async def check_level(interaction: discord.Interaction, user: discord.Member = N
               f"**{progress['xp_in_level']:,}** / **{progress['xp_needed_for_level']:,}** XP",
         inline=False
     )
-    
+
     if progress['booster_multiplier'] > 1.0:
         booster_bonus = int((progress['booster_multiplier'] - 1.0) * 100)
         embed.add_field(name="💎 Booster Bonus", value=f"**+{booster_bonus}% XP**", inline=True)
-    
+
     embed.set_thumbnail(url=target_user.avatar.url if target_user.avatar else target_user.default_avatar.url)
-    
+
     await interaction.response.send_message(embed=embed)
 
-@bot.tree.command(name="leaderboard", description="Show the server XP leaderboard")
-async def leaderboard(interaction: discord.Interaction):
+@bot.tree.command(name="level-leaderboard", description="Show the server XP leaderboard")
+async def level_leaderboard(interaction: discord.Interaction):
     if not user_levels:
         await interaction.response.send_message("❌ No one has earned XP yet!", ephemeral=True)
         return
-    
+
     # Sort users by XP
     sorted_users = sorted(user_levels.items(), key=lambda x: x[1]['xp'], reverse=True)
-    
+
     embed = discord.Embed(
         title="🏆 XP Leaderboard",
         color=0xffd700
     )
-    
+
     leaderboard_text = ""
     for i, (user_id, data) in enumerate(sorted_users[:10]):  # Top 10
         user = interaction.guild.get_member(user_id)
         if user:
             medal = "🥇" if i == 0 else "🥈" if i == 1 else "🥉" if i == 2 else f"#{i+1}"
             leaderboard_text += f"{medal} **{user.display_name}** - Level {data['level']} ({data['xp']:,} XP)\n"
-    
+
     embed.description = leaderboard_text or "No users found!"
-    
+
     await interaction.response.send_message(embed=embed)
 
 @bot.tree.command(name="rankcard", description="Display your rank card with level, XP, and stats")
@@ -2230,6 +2706,8 @@ async def play_song(interaction: discord.Interaction, query: str):
             },
             'youtube_include_dash_manifest': False,
             'youtube_include_hls_manifest': False,
+            # Add support for cookies if available
+            'cookiefile': 'cookies.txt' if os.path.exists('cookies.txt') else None,
         }
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -2251,7 +2729,43 @@ async def play_song(interaction: discord.Interaction, query: str):
     except yt_dlp.DownloadError as e:
         if "Sign in to confirm you're not a bot" in str(e) or "confirm you are not a bot" in str(e):
             logging.error(f"YouTube anti-bot protection triggered: {e}")
-            await interaction.followup.send("❌ YouTube is asking for verification. This usually happens due to too many requests. Try using a direct link instead of search terms, or try again later.", ephemeral=True)
+            # Try with alternative extractor options
+            alt_ydl_opts = {
+                'format': 'bestaudio/best',
+                'quiet': True,
+                'no_warnings': True,
+                'default_search': 'ytsearch',
+                'max_downloads': 1,
+                'extractor_args': {
+                    'youtube': {
+                        'player_client': ['android', 'web'],
+                    }
+                },
+                'cookiefile': 'cookies.txt' if os.path.exists('cookies.txt') else None,
+            }
+
+            try:
+                with yt_dlp.YoutubeDL(alt_ydl_opts) as ydl:
+                    info = ydl.extract_info(query, download=False)
+                    if 'entries' in info:
+                        info = info['entries'][0]
+
+                    url = info['url']
+                    title = info['title']
+
+                    music_queue[guild_id]['queue'].append({'url': url, 'title': title})
+
+                    await interaction.followup.send(f"🎵 Added to queue (using alt method): **{title}**")
+
+                    # Play if nothing is playing
+                    if not music_queue[guild_id]['now_playing']:
+                        await play_next_song(guild_id, interaction)
+                return  # Success with alternative method
+            except Exception:
+                # If alternative method also fails, show the original error message
+                pass
+
+            await interaction.followup.send("❌ YouTube is asking for verification. This usually happens due to too many requests. Try using a direct link instead of search terms, or try again later. You can also try providing a cookies.txt file for better YouTube access.", ephemeral=True)
         elif "Requested format is not available" in str(e):
             logging.error(f"Format not available: {e}")
             await interaction.followup.send("❌ The requested video format is not available. Try a different video.", ephemeral=True)
@@ -2358,6 +2872,41 @@ async def skip_song(interaction: discord.Interaction):
             await interaction.response.send_message("⏭️ Current song not playing, but there are songs in the queue to play next.")
         else:
             await interaction.response.send_message("❌ Not playing anything!", ephemeral=True)
+
+@bot.tree.command(name="yt-help", description="Get help with YouTube music and cookies setup")
+async def yt_help(interaction: discord.Interaction):
+    """Get help with YouTube music and cookies setup"""
+    embed = discord.Embed(
+        title="🎵 YouTube Music Help",
+        description="Information about using YouTube music with the bot and how to set up cookies for better access.",
+        color=0x00ff00
+    )
+
+    embed.add_field(
+        name="Why cookies?",
+        value="YouTube has increased anti-bot measures. Cookies help bypass these protections by mimicking a real browser session.",
+        inline=False
+    )
+
+    embed.add_field(
+        name="How to export cookies",
+        value="1. Install the 'Get cookies.txt LOCALLY' extension in Chrome/Firefox\n"
+              "2. Go to https://www.youtube.com/\n"
+              "3. Log in to your account\n"
+              "4. Click the extension icon and click 'Export'\n"
+              "5. Save the file as 'cookies.txt' in the bot's directory",
+        inline=False
+    )
+
+    embed.add_field(
+        name="Alternative solutions",
+        value="• Use direct YouTube links instead of search queries\n"
+              "• Try shorter search queries\n"
+              "• Use other music platforms when possible",
+        inline=False
+    )
+
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 @bot.tree.command(name="dbtest", description="Test MongoDB connection and data persistence")
 async def db_test(interaction: discord.Interaction):
