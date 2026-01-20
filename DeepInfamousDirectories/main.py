@@ -747,83 +747,119 @@ async def add_xp(user_id, base_xp, member):
 
 def generate_rank_card(member, level, current_xp, xp_for_current, xp_for_next, rank_position, guild_icon_url):
     """Generate a beautiful rank card image"""
-    # Create image
-    width, height = 900, 300
-    card = Image.new('RGB', (width, height), color=(35, 39, 42))
+    # Create image with more compact dimensions
+    width, height = 700, 250
+    card = Image.new('RGB', (width, height), color=(47, 49, 54))  # Discord dark theme
     draw = ImageDraw.Draw(card)
-    
+
     # Try to load fonts (fall back to default if not available)
     try:
-        name_font = ImageFont.truetype("arial.ttf", 40)
-        level_font = ImageFont.truetype("arial.ttf", 60)
-        stat_font = ImageFont.truetype("arial.ttf", 20)
+        name_font = ImageFont.truetype("arial.ttf", 30)
+        level_font = ImageFont.truetype("arial.ttf", 40)
+        stat_font = ImageFont.truetype("arial.ttf", 16)
+        small_stat_font = ImageFont.truetype("arial.ttf", 14)
     except:
         name_font = ImageFont.load_default()
         level_font = ImageFont.load_default()
         stat_font = ImageFont.load_default()
-    
-    # Draw background gradient effect with rectangles
+        small_stat_font = ImageFont.load_default()
+
+    # Draw background with a subtle gradient
     for y in range(height):
-        color_value = int(35 + (y / height) * 20)
-        draw.line([(0, y), (width, y)], fill=(color_value, color_value + 4, color_value + 8))
-    
+        color_value = int(47 + (y / height) * 10)
+        draw.line([(0, y), (width, y)], fill=(color_value, color_value + 2, color_value + 5))
+
     # Draw user avatar (circle)
     try:
         avatar_response = requests.get(member.display_avatar.url)
         avatar = Image.open(BytesIO(avatar_response.content)).convert('RGBA')
-        avatar = avatar.resize((100, 100), Image.Resampling.LANCZOS)
-        
+        avatar_size = 100
+        avatar = avatar.resize((avatar_size, avatar_size), Image.Resampling.LANCZOS)
+
         # Create circular mask
-        mask = Image.new('L', (100, 100), 0)
+        mask = Image.new('L', (avatar_size, avatar_size), 0)
         mask_draw = ImageDraw.Draw(mask)
-        mask_draw.ellipse([0, 0, 100, 100], fill=255)
-        
+        mask_draw.ellipse([0, 0, avatar_size, avatar_size], fill=255)
+
+        # Create border circle
+        border_draw = ImageDraw.Draw(card)
+        border_draw.ellipse([25, 30, 25 + avatar_size, 30 + avatar_size], outline=(88, 101, 242), width=3)
+
         # Paste avatar
-        card.paste(avatar, (30, 100), mask)
+        card.paste(avatar, (27, 32), mask)
     except:
         pass
-    
+
     # Draw username
-    draw.text((150, 80), member.name[:20], font=name_font, fill=(255, 255, 255))
-    
-    # Draw level
-    draw.text((650, 100), f"Lvl {level}", font=level_font, fill=(88, 166, 255))
-    
-    # Draw rank position
-    draw.text((150, 140), f"Rank: #{rank_position}", font=stat_font, fill=(100, 200, 100))
-    
+    draw.text((140, 35), member.name[:20], font=name_font, fill=(255, 255, 255))
+
+    # Draw level badge
+    level_bg = (88, 101, 242)  # Discord blurple
+    draw.rounded_rectangle([550, 30, 670, 80], radius=10, fill=level_bg)
+    draw.text((595, 40), f"LVL {level}", font=level_font, fill=(255, 255, 255))
+
+    # Draw rank position with medal icon
+    rank_text = f"#{rank_position}"
+    draw.text((140, 75), f"Rank: {rank_text}", font=stat_font, fill=(255, 215, 0))  # Gold color
+
     # Draw XP bar
-    bar_width = 700
-    bar_height = 25
-    bar_x = 150
-    bar_y = 190
-    
-    # Background bar
-    draw.rectangle([bar_x, bar_y, bar_x + bar_width, bar_y + bar_height], fill=(60, 60, 60), outline=(100, 100, 100))
-    
-    # XP progress
+    bar_width = 500
+    bar_height = 20
+    bar_x = 140
+    bar_y = 120
+
+    # Background bar with rounded edges
+    draw.rounded_rectangle([bar_x, bar_y, bar_x + bar_width, bar_y + bar_height], radius=10, fill=(60, 60, 60))
+
+    # XP progress with gradient effect
     xp_in_level = current_xp - xp_for_current
     xp_needed = xp_for_next - xp_for_current
-    progress_width = (xp_in_level / xp_needed) * bar_width if xp_needed > 0 else 0
-    draw.rectangle([bar_x, bar_y, bar_x + progress_width, bar_y + bar_height], fill=(88, 166, 255))
-    
-    # XP text
-    draw.text((bar_x + 10, bar_y + 2), f"{xp_in_level}/{xp_needed} XP", font=stat_font, fill=(255, 255, 255))
-    
-    # Draw server logo at bottom as rectangle
+    progress_width = int((xp_in_level / xp_needed) * bar_width) if xp_needed > 0 else 0
+
+    # Draw progress with gradient effect
+    for i in range(progress_width):
+        # Create a gradient from blue to purple
+        r = int(88 + (i / progress_width) * 50) if progress_width > 0 else 88
+        g = int(166 + (i / progress_width) * 20) if progress_width > 0 else 166
+        b = int(255 - (i / progress_width) * 50) if progress_width > 0 else 255
+        draw.line([(bar_x + i, bar_y), (bar_x + i, bar_y + bar_height)], fill=(r, g, b))
+
+    # XP text overlay
+    xp_text = f"{xp_in_level:,} / {xp_needed:,} XP"
+    text_bbox = draw.textbbox((0, 0), xp_text, font=small_stat_font)
+    text_width = text_bbox[2] - text_bbox[0]
+    text_x = bar_x + (bar_width - text_width) // 2
+    draw.text((text_x, bar_y + 2), xp_text, font=small_stat_font, fill=(255, 255, 255))
+
+    # Draw total XP
+    total_xp_text = f"Total XP: {current_xp:,}"
+    draw.text((140, 155), total_xp_text, font=stat_font, fill=(180, 180, 180))
+
+    # Draw server icon
     try:
         logo_response = requests.get(guild_icon_url)
         logo = Image.open(BytesIO(logo_response.content)).convert('RGBA')
-        logo = logo.resize((80, 80), Image.Resampling.LANCZOS)
-        card.paste(logo, (width - 100, height - 90), logo)
+        logo_size = 60
+        logo = logo.resize((logo_size, logo_size), Image.Resampling.LANCZOS)
+
+        # Create circular mask for server icon
+        logo_mask = Image.new('L', (logo_size, logo_size), 0)
+        logo_mask_draw = ImageDraw.Draw(logo_mask)
+        logo_mask_draw.ellipse([0, 0, logo_size, logo_size], fill=255)
+
+        # Paste server icon
+        card.paste(logo, (width - 80, height - 80), logo_mask)
     except:
         pass
-    
+
+    # Add a subtle border
+    draw.rectangle([0, 0, width-1, height-1], outline=(88, 101, 242), width=2)
+
     # Save to bytes
     img_bytes = BytesIO()
     card.save(img_bytes, format='PNG')
     img_bytes.seek(0)
-    
+
     return img_bytes
 
 # Anti-Spam Configuration
@@ -1070,6 +1106,10 @@ async def giveaway_slash(
     try:
         giveaway_msg = await channel.send(embed=embed)
         await giveaway_msg.add_reaction("🎉")
+
+        # Update the embed to include the message ID
+        embed.set_footer(text=f"Message ID: {giveaway_msg.id} | Giveaway ends at")
+        await giveaway_msg.edit(embed=embed)
     except discord.Forbidden:
         await interaction.response.send_message("❌ I don't have permission to send messages in that channel!", ephemeral=True)
         return
