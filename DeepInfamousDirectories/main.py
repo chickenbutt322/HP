@@ -556,16 +556,17 @@ def get_giveaway_entry_multiplier(member):
     booster_multiplier = 1
     if member.premium_since:
         guild = member.guild
-        mega_booster_role = guild.get_role(1397371634012258374)  # Mega Booster (3+ boosts)
-        super_booster_role = guild.get_role(1397371603255296181)  # Super Booster (2 boosts)
-        server_booster_role = guild.get_role(1397361697324269679)  # Server Booster (1 boost)
+        if guild:  # Make sure guild exists
+            mega_booster_role = guild.get_role(1397371634012258374)  # Mega Booster (3+ boosts)
+            super_booster_role = guild.get_role(1397371603255296181)  # Super Booster (2 boosts)
+            server_booster_role = guild.get_role(1397361697324269679)  # Server Booster (1 boost)
 
-        if mega_booster_role and mega_booster_role in member.roles:
-            booster_multiplier = 7  # 7x giveaway entries
-        elif super_booster_role and super_booster_role in member.roles:
-            booster_multiplier = 5  # 5x giveaway entries
-        elif server_booster_role and server_booster_role in member.roles:
-            booster_multiplier = 3  # 3x giveaway entries
+            if mega_booster_role and mega_booster_role in member.roles:
+                booster_multiplier = 7  # 7x giveaway entries
+            elif super_booster_role and super_booster_role in member.roles:
+                booster_multiplier = 5  # 5x giveaway entries
+            elif server_booster_role and server_booster_role in member.roles:
+                booster_multiplier = 3  # 3x giveaway entries
 
     # Level perk bonuses
     user_level = user_levels.get(member.id, {'level': 1})['level']
@@ -576,7 +577,7 @@ def get_giveaway_entry_multiplier(member):
         if user_level >= perk_level:
             level_bonus = max(level_bonus, bonus)
 
-    return booster_multiplier + level_bonus
+    return max(1, booster_multiplier + level_bonus)  # Ensure at least 1 entry
 
 async def add_xp(user_id, base_xp, member):
     """Add XP to a user with level and booster multipliers - thread safe"""
@@ -872,6 +873,7 @@ def parse_duration(duration_str):
     blacklisted_role="Role that cannot enter (optional)",
     other="Additional options (optional)"
 )
+@app_commands.check(lambda interaction: interaction.user.guild_permissions.administrator or any(role.id == 1397370001215983727 for role in interaction.user.roles))
 async def giveaway_slash(
     interaction: discord.Interaction,
     channel: discord.TextChannel,
@@ -962,7 +964,6 @@ async def giveaway_slash(
         'winners': winners,
         'host': host_mention,
         'end_time': end_time,
-        'entries': [],
         'required_role': required_role.name if required_role else '',
         'blacklisted_role': blacklisted_role.name if blacklisted_role else '',
         'rig_winner': rig_user_id,
@@ -985,20 +986,34 @@ async def giveaway_slash(
 async def end_giveaway(giveaway_id):
     """End a giveaway and select winners"""
     if giveaway_id not in active_giveaways:
+        logging.warning(f"Attempted to end non-existent giveaway: {giveaway_id}")
         return
 
     giveaway = active_giveaways[giveaway_id]
     if giveaway['ended']:
+        logging.debug(f"Giveaway {giveaway_id} already ended")
         return
 
     # Get the message and channel
     channel = bot.get_channel(giveaway['channel_id'])
     if not channel:
+        logging.error(f"Could not find channel {giveaway['channel_id']} for giveaway {giveaway_id}")
+        # Mark as ended anyway to prevent repeated attempts
+        giveaway['ended'] = True
+        save_data()
         return
 
     try:
         message = await channel.fetch_message(giveaway['message_id'])
     except discord.NotFound:
+        logging.warning(f"Giveaway message {giveaway['message_id']} not found")
+        giveaway['ended'] = True
+        save_data()
+        return
+    except discord.Forbidden:
+        logging.error(f"No permission to access message {giveaway['message_id']} in channel {channel.name}")
+        giveaway['ended'] = True
+        save_data()
         return
 
     # Get all users who reacted with 🎉
@@ -1011,40 +1026,65 @@ async def end_giveaway(giveaway_id):
                        f"**Winners:** No valid entries!",
             color=0xff0000
         )
-        await message.edit(embed=embed)
+        try:
+            await message.edit(embed=embed)
+        except discord.Forbidden:
+            logging.error(f"No permission to edit giveaway message {giveaway['message_id']}")
+        giveaway['ended'] = True
+        save_data()
+        return
+
+    # Get the guild
+    guild = bot.get_guild(giveaway['guild_id'])
+    if not guild:
+        logging.error(f"Could not find guild {giveaway['guild_id']} for giveaway {giveaway_id}")
         giveaway['ended'] = True
         save_data()
         return
 
     # Get eligible users
     eligible_users = []
-    guild = bot.get_guild(giveaway['guild_id'])
-
-    async for user in reaction.users():
-        if user.bot:
-            continue
-
-        member = guild.get_member(user.id)
-        if not member:
-            continue
-
-        # Check role requirements
-        if giveaway.get('required_role'):
-            required_role_name = giveaway['required_role'].replace('@', '').replace('<', '').replace('>', '')
-            required_role = discord.utils.get(guild.roles, name=required_role_name)
-            if required_role and required_role not in member.roles:
+    try:
+        async for user in reaction.users():
+            if user.bot:
                 continue
 
-        # Check blacklisted roles
-        if giveaway.get('blacklisted_role'):
-            blacklisted_role_name = giveaway['blacklisted_role'].replace('@', '').replace('<', '').replace('>', '')
-            blacklisted_role = discord.utils.get(guild.roles, name=blacklisted_role_name)
-            if blacklisted_role and blacklisted_role in member.roles:
+            member = guild.get_member(user.id)
+            if not member:
                 continue
 
-        # Apply giveaway entry multiplier
-        entry_multiplier = get_giveaway_entry_multiplier(member)
-        eligible_users.extend([member] * entry_multiplier)
+            # Check role requirements
+            if giveaway.get('required_role'):
+                required_role_name = giveaway['required_role'].replace('@', '').replace('<', '').replace('>', '')
+                required_role = discord.utils.get(guild.roles, name=required_role_name)
+                if required_role and required_role not in member.roles:
+                    continue
+
+            # Check blacklisted roles
+            if giveaway.get('blacklisted_role'):
+                blacklisted_role_name = giveaway['blacklisted_role'].replace('@', '').replace('<', '').replace('>', '')
+                blacklisted_role = discord.utils.get(guild.roles, name=blacklisted_role_name)
+                if blacklisted_role and blacklisted_role in member.roles:
+                    continue
+
+            # Apply giveaway entry multiplier
+            entry_multiplier = get_giveaway_entry_multiplier(member)
+            eligible_users.extend([member] * entry_multiplier)
+    except Exception as e:
+        logging.error(f"Error processing giveaway entries: {e}")
+        embed = discord.Embed(
+            title="🎉 GIVEAWAY ENDED 🎉",
+            description=f"**Prize:** {giveaway['prize']}\n"
+                       f"**Winners:** Error processing entries!",
+            color=0xff0000
+        )
+        try:
+            await message.edit(embed=embed)
+        except discord.Forbidden:
+            pass
+        giveaway['ended'] = True
+        save_data()
+        return
 
     if not eligible_users:
         embed = discord.Embed(
@@ -1053,7 +1093,10 @@ async def end_giveaway(giveaway_id):
                        f"**Winners:** No eligible entries!",
             color=0xff0000
         )
-        await message.edit(embed=embed)
+        try:
+            await message.edit(embed=embed)
+        except discord.Forbidden:
+            pass
         giveaway['ended'] = True
         save_data()
         return
@@ -1064,16 +1107,26 @@ async def end_giveaway(giveaway_id):
     # Check if there's a rigged winner
     if giveaway.get('rig_winner'):
         rig_id = giveaway['rig_winner']
-        # guild is already available in this scope
         rig_member = guild.get_member(rig_id)
         if rig_member and rig_member in eligible_users:
             winners.append(rig_member)
-            eligible_users.remove(rig_member)
+            # Remove all instances of the rigged member from eligible_users (for multi-entry)
+            eligible_users = [u for u in eligible_users if u != rig_member]
 
     # Select remaining winners randomly
     remaining_winners = min(giveaway['winners'] - len(winners), len(eligible_users))
     if remaining_winners > 0:
-        winners.extend(random.sample(eligible_users, remaining_winners))
+        # Use set to avoid duplicate winners
+        selected_winners = set()
+        available_users = eligible_users.copy()
+
+        while len(selected_winners) < remaining_winners and available_users:
+            winner = random.choice(available_users)
+            selected_winners.add(winner)
+            # Remove all instances of this winner from available_users
+            available_users = [u for u in available_users if u != winner]
+
+        winners.extend(list(selected_winners))
 
     # Create winner announcement
     if winners:
@@ -1091,7 +1144,10 @@ async def end_giveaway(giveaway_id):
         congrats_msg = f"🎉 Congratulations {', '.join(winner_mentions)}! You won **{giveaway['prize']}**!\n"
         congrats_msg += f"Contact {giveaway['host']} to claim your prize!"
 
-        await channel.send(congrats_msg)
+        try:
+            await channel.send(congrats_msg)
+        except discord.Forbidden:
+            logging.error(f"No permission to send winner announcement in {channel.name}")
 
         # DM winners
         for winner in winners:
@@ -1099,13 +1155,15 @@ async def end_giveaway(giveaway_id):
                 dm_embed = discord.Embed(
                     title="🎉 You Won a Giveaway! 🎉",
                     description=f"**Prize:** {giveaway['prize']}\n"
-                               f"**Server:** {guild.name}\n\n"
+                               f"**Server name:** {guild.name}\n\n"
                                f"Contact {giveaway['host']} to claim your prize!",
                     color=0x00ff00
                 )
                 await winner.send(embed=dm_embed)
             except discord.Forbidden:
-                pass  # User has DMs disabled
+                logging.info(f"Could not DM winner {winner} - DMs disabled")
+            except Exception as e:
+                logging.error(f"Error sending DM to winner {winner}: {e}")
     else:
         embed = discord.Embed(
             title="🎉 GIVEAWAY ENDED 🎉",
@@ -1114,12 +1172,17 @@ async def end_giveaway(giveaway_id):
             color=0xff0000
         )
 
-    await message.edit(embed=embed)
+    try:
+        await message.edit(embed=embed)
+    except discord.Forbidden:
+        logging.error(f"No permission to edit giveaway message {giveaway['message_id']}")
+
     giveaway['ended'] = True
     save_data()
 
 @bot.tree.command(name="reroll", description="Reroll a giveaway to select new winners")
 @app_commands.describe(message_id="The message ID of the giveaway to reroll")
+@app_commands.check(lambda interaction: interaction.user.guild_permissions.administrator or any(role.id == 1397370001215983727 for role in interaction.user.roles))
 async def reroll_giveaway(interaction: discord.Interaction, message_id: str):
     try:
         msg_id = int(message_id)
@@ -1132,9 +1195,8 @@ async def reroll_giveaway(interaction: discord.Interaction, message_id: str):
         return
 
     giveaway = active_giveaways[msg_id]
-    if not giveaway['ended']:
-        await interaction.response.send_message("❌ Giveaway hasn't ended yet!", ephemeral=True)
-        return
+    # Allow rerolling even if the giveaway hasn't officially ended yet
+    # This allows admins to reroll early if needed
 
     # Reset the giveaway state and reroll
     giveaway['ended'] = False
@@ -1143,6 +1205,7 @@ async def reroll_giveaway(interaction: discord.Interaction, message_id: str):
 
 @bot.tree.command(name="end-giveaway", description="Force end a giveaway early")
 @app_commands.describe(message_id="The message ID of the giveaway to end")
+@app_commands.check(lambda interaction: interaction.user.guild_permissions.administrator or any(role.id == 1397370001215983727 for role in interaction.user.roles))
 async def force_end_giveaway(interaction: discord.Interaction, message_id: str):
     try:
         msg_id = int(message_id)
@@ -1161,6 +1224,44 @@ async def force_end_giveaway(interaction: discord.Interaction, message_id: str):
 
     await end_giveaway(msg_id)
     await interaction.response.send_message("✅ Giveaway ended!", ephemeral=True)
+
+@bot.tree.command(name="list-giveaways", description="List all active giveaways")
+@app_commands.check(lambda interaction: interaction.user.guild_permissions.administrator or any(role.id == 1397370001215983727 for role in interaction.user.roles))
+async def list_giveaways(interaction: discord.Interaction):
+    """List all active giveaways"""
+
+    active_list = []
+    for msg_id, giveaway in active_giveaways.items():
+        if not giveaway.get('ended', False):
+            channel = bot.get_channel(giveaway['channel_id'])
+            channel_name = channel.name if channel else "Unknown Channel"
+            time_left = giveaway['end_time'] - datetime.utcnow()
+            hours, remainder = divmod(int(time_left.total_seconds()), 3600)
+            minutes, _ = divmod(remainder, 60)
+            time_str = f"{hours}h {minutes}m" if hours > 0 else f"{minutes}m"
+
+            active_list.append(
+                f"• **Message ID:** {msg_id}\n"
+                f"  **Prize:** {giveaway['prize']}\n"
+                f"  **Channel:** #{channel_name}\n"
+                f"  **Time Left:** {time_str}\n"
+                f"  **Winners:** {giveaway['winners']}\n"
+            )
+
+    if not active_list:
+        embed = discord.Embed(
+            title="📋 Active Giveaways",
+            description="No active giveaways found.",
+            color=0x00ff00
+        )
+    else:
+        embed = discord.Embed(
+            title=f"📋 Active Giveaways ({len(active_list)})",
+            description="\n".join(active_list),
+            color=0x00ff00
+        )
+
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 # Warning System Commands
 @bot.tree.command(name="warn", description="Give a warning to a user")
@@ -2114,31 +2215,49 @@ async def play_song(interaction: discord.Interaction, query: str):
         if not music_queue[guild_id]['vc'] or not music_queue[guild_id]['vc'].is_connected():
             music_queue[guild_id]['vc'] = await vc.connect()
         
-        # Extract info using yt-dlp
+        # Extract info using yt-dlp with options to handle YouTube's anti-bot measures
         ydl_opts = {
             'format': 'bestaudio/best',
             'quiet': True,
             'no_warnings': True,
             'default_search': 'ytsearch',
             'max_downloads': 1,
+            'extractor_args': {
+                'youtube': {
+                    'skip': ['hls', 'dash'],
+                    'player_skip': ['webpage', 'configs', 'js'],
+                }
+            },
+            'youtube_include_dash_manifest': False,
+            'youtube_include_hls_manifest': False,
         }
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(query, download=False)
             if 'entries' in info:
                 info = info['entries'][0]
-            
+
             url = info['url']
             title = info['title']
-            
+
             music_queue[guild_id]['queue'].append({'url': url, 'title': title})
-            
+
             await interaction.followup.send(f"⏯️ Added to queue: **{title}**")
-            
+
             # Play if nothing is playing
             if not music_queue[guild_id]['now_playing']:
                 await play_next_song(guild_id, interaction)
-    
+
+    except yt_dlp.DownloadError as e:
+        if "Sign in to confirm you're not a bot" in str(e) or "confirm you are not a bot" in str(e):
+            logging.error(f"YouTube anti-bot protection triggered: {e}")
+            await interaction.followup.send("❌ YouTube is asking for verification. This usually happens due to too many requests. Try using a direct link instead of search terms, or try again later.", ephemeral=True)
+        elif "Requested format is not available" in str(e):
+            logging.error(f"Format not available: {e}")
+            await interaction.followup.send("❌ The requested video format is not available. Try a different video.", ephemeral=True)
+        else:
+            logging.error(f"Download error: {e}")
+            await interaction.followup.send(f"❌ Download error: {str(e)}", ephemeral=True)
     except Exception as e:
         logging.error(f"Error playing song: {e}")
         await interaction.followup.send(f"❌ Error: {str(e)}", ephemeral=True)
@@ -2148,31 +2267,64 @@ async def play_next_song(guild_id, interaction):
     try:
         if not music_queue[guild_id]['queue']:
             music_queue[guild_id]['now_playing'] = None
+            # Optionally notify when queue is empty
             return
-        
+
         song = music_queue[guild_id]['queue'].pop(0)
         music_queue[guild_id]['now_playing'] = song
-        
+
         vc = music_queue[guild_id]['vc']
-        audio = discord.FFmpegPCMAudio(song['url'], options="-vn")
-        
+
+        # Try to create audio stream with error handling
+        try:
+            audio = discord.FFmpegPCMAudio(song['url'], options="-vn")
+        except Exception as audio_error:
+            logging.error(f"Failed to create audio stream for {song['title']}: {audio_error}")
+            # Try to play the next song in queue
+            asyncio.run_coroutine_threadsafe(play_next_song(guild_id, interaction), bot.loop)
+            return
+
         def after_playing(error):
             if error:
                 logging.error(f"Error playing audio: {error}")
+            # Schedule next song in the event loop
             asyncio.run_coroutine_threadsafe(play_next_song(guild_id, interaction), bot.loop)
-        
-        vc.play(audio, after=after_playing)
+
+        if vc.is_connected() and not vc.is_playing():
+            vc.play(audio, after=after_playing)
+        else:
+            # If VC is not connected or already playing, try to reconnect or skip
+            if not vc.is_connected():
+                # Try to reconnect to voice channel
+                try:
+                    voice_channel = music_queue[guild_id]['vc'].channel
+                    music_queue[guild_id]['vc'] = await voice_channel.connect()
+                    vc = music_queue[guild_id]['vc']
+                    if not vc.is_playing():
+                        vc.play(audio, after=after_playing)
+                except Exception as reconnect_error:
+                    logging.error(f"Failed to reconnect to voice channel: {reconnect_error}")
+                    # Skip this song and try the next one
+                    asyncio.run_coroutine_threadsafe(play_next_song(guild_id, interaction), bot.loop)
+            elif vc.is_playing():
+                # If already playing, just schedule the next song
+                asyncio.run_coroutine_threadsafe(play_next_song(guild_id, interaction), bot.loop)
     except Exception as e:
         logging.error(f"Error in play_next_song: {e}")
+        # Ensure we try to play the next song even if there's an error
+        try:
+            asyncio.run_coroutine_threadsafe(play_next_song(guild_id, interaction), bot.loop)
+        except:
+            pass  # If we can't schedule the next song, just continue
 
 @bot.tree.command(name="stop", description="Stop the music player")
 async def stop_music(interaction: discord.Interaction):
     guild_id = interaction.guild.id
-    
+
     if guild_id not in music_queue or not music_queue[guild_id]['vc']:
         await interaction.response.send_message("❌ Not playing anything!", ephemeral=True)
         return
-    
+
     vc = music_queue[guild_id]['vc']
     if vc.is_playing():
         vc.stop()
@@ -2181,7 +2333,12 @@ async def stop_music(interaction: discord.Interaction):
         await vc.disconnect()
         await interaction.response.send_message("⏹️ Music stopped and queue cleared.")
     else:
-        await interaction.response.send_message("❌ Not playing anything!", ephemeral=True)
+        # Clear the queue even if not currently playing
+        music_queue[guild_id]['queue'] = []
+        music_queue[guild_id]['now_playing'] = None
+        if vc.is_connected():
+            await vc.disconnect()
+        await interaction.response.send_message("⏹️ Music stopped and queue cleared.")
 
 @bot.tree.command(name="skip", description="Skip current song")
 async def skip_song(interaction: discord.Interaction):
@@ -2196,7 +2353,11 @@ async def skip_song(interaction: discord.Interaction):
         vc.stop()
         await interaction.response.send_message("⏭️ Skipped current song.")
     else:
-        await interaction.response.send_message("❌ Not playing anything!", ephemeral=True)
+        # Check if there are songs in the queue to play next
+        if music_queue[guild_id]['queue']:
+            await interaction.response.send_message("⏭️ Current song not playing, but there are songs in the queue to play next.")
+        else:
+            await interaction.response.send_message("❌ Not playing anything!", ephemeral=True)
 
 @bot.tree.command(name="dbtest", description="Test MongoDB connection and data persistence")
 async def db_test(interaction: discord.Interaction):
