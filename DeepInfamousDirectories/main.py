@@ -702,56 +702,71 @@ def get_user_message_count(guild_id, user_id, period="total"):
     stats = user_message_stats.get(guild_id, {}).get(user_id, {})
     return stats.get(period, 0)
 
-def get_eligible_users(guild, reaction, giveaway):
+async def get_eligible_users(guild, reaction, giveaway):
+    """Get all eligible users who reacted to the giveaway"""
     eligible_users = []
-    async def collect_users():
-        async for user in reaction.users():
-            if user.bot: continue
-            member = guild.get_member(user.id)
-            if not member: continue
+    
+    async for user in reaction.users():
+        if user.bot: 
+            continue
+        member = guild.get_member(user.id)
+        if not member: 
+            continue
 
-            # required role check
-            if giveaway.get('required_role'):
-                required_role = discord.utils.get(guild.roles, name=giveaway['required_role'])
-                if required_role and required_role not in member.roles:
-                    continue
+        # required role check
+        if giveaway.get('required_role'):
+            required_role = discord.utils.get(guild.roles, name=giveaway['required_role'])
+            if required_role and required_role not in member.roles:
+                continue
 
-            # blacklisted role check
-            if giveaway.get('blacklisted_role'):
-                blacklisted_role = discord.utils.get(guild.roles, name=giveaway['blacklisted_role'])
-                if blacklisted_role and blacklisted_role in member.roles:
-                    continue
+        # blacklisted role check
+        if giveaway.get('blacklisted_role'):
+            blacklisted_role = discord.utils.get(guild.roles, name=giveaway['blacklisted_role'])
+            if blacklisted_role and blacklisted_role in member.roles:
+                continue
 
-            # message requirements
-            daily_req = giveaway.get('required_daily', 0)
-            weekly_req = giveaway.get('required_weekly', 0)
-            monthly_req = giveaway.get('required_monthly', 0)
-            total_req = giveaway.get('required_total', 0)
+        # message requirements
+        daily_req = giveaway.get('required_daily', 0)
+        weekly_req = giveaway.get('required_weekly', 0)
+        monthly_req = giveaway.get('required_monthly', 0)
+        total_req = giveaway.get('required_total', 0)
 
-            if daily_req and get_user_message_count(guild.id, member.id, "daily") < daily_req: continue
-            if weekly_req and get_user_message_count(guild.id, member.id, "weekly") < weekly_req: continue
-            if monthly_req and get_user_message_count(guild.id, member.id, "monthly") < monthly_req: continue
-            if total_req and get_user_message_count(guild.id, member.id, "total") < total_req: continue
+        if daily_req and get_user_message_count(guild.id, member.id, "daily") < daily_req: 
+            continue
+        if weekly_req and get_user_message_count(guild.id, member.id, "weekly") < weekly_req: 
+            continue
+        if monthly_req and get_user_message_count(guild.id, member.id, "monthly") < monthly_req: 
+            continue
+        if total_req and get_user_message_count(guild.id, member.id, "total") < total_req: 
+            continue
 
-            eligible_users.append(member)
-    return collect_users, eligible_users
+        eligible_users.append(member)
+    
+    return eligible_users
 
 def pick_winners(eligible_users, giveaway):
+    """Pick winners for a giveaway, ensuring rigged winner (_other_internal) wins first"""
     winners = []
+    eligible_list = eligible_users.copy()  # Work with a copy
 
-    # pick the 'other' member first
+    # Pick the 'other' (rigged) member first if specified
     other_id = giveaway.get("_other_internal")
-    guild = bot.get_guild(giveaway['guild_id'])
     if other_id:
-        other_member = guild.get_member(other_id)
-        if other_member and other_member in eligible_users:
-            winners.append(other_member)
-            eligible_users.remove(other_member)
+        guild = bot.get_guild(giveaway['guild_id'])
+        if guild:
+            other_member = guild.get_member(other_id)
+            # Only add if they're eligible (they must have reacted and met requirements)
+            if other_member and other_member in eligible_list:
+                winners.append(other_member)
+                eligible_list.remove(other_member)
+                logging.info(f"Rigged winner added: {other_member.name} (ID: {other_id})")
 
-    # pick remaining winners randomly
-    remaining_winners = min(giveaway['winners'] - len(winners), len(eligible_users))
-    if remaining_winners > 0:
-        winners.extend(random.sample(eligible_users, remaining_winners))
+    # Pick remaining winners randomly from eligible users
+    remaining_winners_needed = giveaway['winners'] - len(winners)
+    if remaining_winners_needed > 0 and eligible_list:
+        winners_to_pick = min(remaining_winners_needed, len(eligible_list))
+        additional_winners = random.sample(eligible_list, winners_to_pick)
+        winners.extend(additional_winners)
 
     return winners
 
@@ -881,17 +896,21 @@ async def giveaway_slash(
         "required_daily": required_daily,
         "required_weekly": required_weekly,
         "required_monthly": required_monthly,
-        "required_total": required_total
+        "required_total": required_total,
+        "end_time": end_time
     }
-    active_giveaways[channel.id] = giveaway_data
-
+    
     # ------------------------
     # Send embed with reaction
     # ------------------------
-    embed = create_giveaway_embed(giveaway_data,end_time)
+    embed = create_giveaway_embed(giveaway_data, end_time)
     try:
         msg = await channel.send(embed=embed)
         await msg.add_reaction("🎉")
+        
+        # Store giveaway with message ID as key (so we can find it later)
+        active_giveaways[msg.id] = giveaway_data
+        
     except discord.Forbidden:
         await interaction.response.send_message("❌ I can't send messages there!", ephemeral=True)
         return
@@ -901,7 +920,7 @@ async def giveaway_slash(
     # ------------------------
     async def end_task():
         await asyncio.sleep(parsed_duration.total_seconds())
-        await end_giveaway(channel.id)
+        await end_giveaway(msg.id)
     asyncio.create_task(end_task())
 
     save_data()
@@ -1568,6 +1587,114 @@ async def end_giveaway_after_delay(giveaway_id, delay_seconds):
     """End giveaway after specified delay"""
     await asyncio.sleep(delay_seconds)
     await end_giveaway(giveaway_id)
+
+async def end_giveaway(msg_id):
+    """End a giveaway and pick winners"""
+    if msg_id not in active_giveaways:
+        logging.warning(f"Giveaway {msg_id} not found in active_giveaways")
+        return
+    
+    giveaway = active_giveaways[msg_id]
+    
+    # Mark as ended
+    giveaway['ended'] = True
+    
+    try:
+        # Get the message
+        guild = bot.get_guild(giveaway['guild_id'])
+        if not guild:
+            logging.error(f"Guild {giveaway['guild_id']} not found")
+            return
+        
+        channel = guild.get_channel(giveaway['channel_id'])
+        if not channel:
+            logging.error(f"Channel {giveaway['channel_id']} not found")
+            return
+        
+        try:
+            message = await channel.fetch_message(msg_id)
+        except discord.NotFound:
+            logging.error(f"Message {msg_id} not found")
+            # Clean up
+            if msg_id in active_giveaways:
+                del active_giveaways[msg_id]
+            save_data()
+            return
+        
+        # Get reaction (🎉 emoji)
+        reaction = None
+        for r in message.reactions:
+            if str(r.emoji) == "🎉":
+                reaction = r
+                break
+        
+        if not reaction:
+            logging.warning(f"No 🎉 reaction found on message {msg_id}")
+            await message.reply("❌ No one entered this giveaway!")
+            # Clean up
+            if msg_id in active_giveaways:
+                del active_giveaways[msg_id]
+            save_data()
+            return
+        
+        # Get eligible users
+        eligible_users = await get_eligible_users(guild, reaction, giveaway)
+        
+        if not eligible_users:
+            await message.reply("❌ No eligible users entered this giveaway!")
+            # Clean up
+            if msg_id in active_giveaways:
+                del active_giveaways[msg_id]
+            save_data()
+            return
+        
+        # Pick winners (this handles the rigged winner if _other_internal is set)
+        winners = pick_winners(eligible_users.copy(), giveaway)
+        
+        if not winners:
+            await message.reply("❌ Could not select winners!")
+            # Clean up
+            if msg_id in active_giveaways:
+                del active_giveaways[msg_id]
+            save_data()
+            return
+        
+        # Announce winners
+        winner_mentions = ", ".join([winner.mention for winner in winners])
+        
+        embed = discord.Embed(
+            title="🎉 GIVEAWAY ENDED 🎉",
+            description=f"**Prize:** {giveaway['prize']}\n**Winner(s):** {winner_mentions}",
+            color=0x00ff00
+        )
+        
+        # Check if there was a rigged winner
+        if giveaway.get('_other_internal'):
+            other_id = giveaway['_other_internal']
+            rigged_winner = guild.get_member(other_id)
+            if rigged_winner and rigged_winner in winners:
+                embed.set_footer(text="🎯 Rigged winner included")
+        
+        await message.reply(embed=embed)
+        
+        # Ping winners
+        for winner in winners:
+            try:
+                await winner.send(f"🎉 Congratulations! You won **{giveaway['prize']}** in {guild.name}!")
+            except discord.Forbidden:
+                pass  # User has DMs disabled
+        
+        # Clean up
+        if msg_id in active_giveaways:
+            del active_giveaways[msg_id]
+        save_data()
+        
+    except Exception as e:
+        logging.error(f"Error ending giveaway {msg_id}: {e}")
+        # Clean up on error
+        if msg_id in active_giveaways:
+            giveaway['ended'] = True
+            save_data()
 
 @bot.tree.command(name="userinfo", description="Get detailed information about a user")
 @app_commands.describe(user="The user to get info about (optional - defaults to yourself)")
