@@ -2012,6 +2012,18 @@ def prepare_ytdl_opts(query, platform):
         'no_warnings': True,
         'noplaylist': False,  # Allow playlists
         'extract_flat': False,
+        # Avoid authentication issues - use formats that don't require login
+        'no_check_certificate': False,  # Keep certificate checking for security
+        # Better compatibility - prefer webm/opus formats that work better
+        'prefer_free_formats': True,
+        # Avoid age-restricted content issues
+        'age_limit': None,
+        # Skip DASH formats that might require authentication
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['android', 'web'],  # Use Android/Web clients that don't require auth
+            }
+        },
     }
     
     # For search queries, use YouTube search
@@ -2075,11 +2087,38 @@ async def play_song(interaction: discord.Interaction, query: str):
         # Prepare yt-dlp options
         ydl_opts = prepare_ytdl_opts(search_query, platform)
         
-        # Extract info using yt-dlp
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            try:
+        # Extract info using yt-dlp with fallback options
+        info = None
+        last_error = None
+        
+        # Try with primary options first
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(search_query, download=False)
+        except Exception as primary_error:
+            last_error = primary_error
+            # Try fallback: simpler options without extractor_args
+            logging.info(f"Primary extraction failed, trying fallback: {primary_error}")
+            try:
+                fallback_opts = {
+                    'format': 'bestaudio/best',
+                    'quiet': True,
+                    'no_warnings': True,
+                    'default_search': 'ytsearch' if platform == 'Search' else None,
+                }
+                if platform == 'Search':
+                    fallback_opts['default_search'] = 'ytsearch'
                 
+                with yt_dlp.YoutubeDL(fallback_opts) as ydl:
+                    info = ydl.extract_info(search_query, download=False)
+                logging.info("Fallback extraction succeeded")
+            except Exception as fallback_error:
+                last_error = fallback_error
+                logging.error(f"Fallback also failed: {fallback_error}")
+        
+        # If we got info, process it
+        if info:
+            try:
                 # Handle playlists
                 if 'entries' in info:
                     entries = [e for e in info['entries'] if e is not None]
@@ -2142,14 +2181,80 @@ async def play_song(interaction: discord.Interaction, query: str):
                         await play_next_song(guild_id, interaction)
             
             except Exception as e:
-                # If direct extraction fails for Spotify/Apple Music, try searching YouTube
-                if platform in ['Spotify', 'Apple Music'] and 'url' not in str(e).lower():
-                    logging.info(f"Direct extraction failed for {platform}, trying YouTube search...")
+                # If processing fails, try fallback search
+                if platform in ['Spotify', 'Apple Music']:
+                    logging.info(f"Processing failed for {platform}, trying YouTube search...")
                     try:
-                        # Extract track name for better search
-                        # This is a fallback - ideally we'd use APIs here
-                        ydl_opts['default_search'] = 'ytsearch'
-                        info = ydl.extract_info(query, download=False)
+                        # Try searching YouTube instead
+                        search_opts = {
+                            'format': 'bestaudio/best',
+                            'quiet': True,
+                            'no_warnings': True,
+                            'default_search': 'ytsearch',
+                        }
+                        with yt_dlp.YoutubeDL(search_opts) as ydl:
+                            search_info = ydl.extract_info(query, download=False)
+                            if 'entries' in search_info:
+                                search_info = search_info['entries'][0]
+                            
+                            if search_info and 'url' in search_info:
+                                url = search_info['url']
+                                title = search_info.get('title', 'Unknown Title')
+                                music_queue[guild_id]['queue'].append({
+                                    'url': url, 
+                                    'title': title, 
+                                    'platform': 'YouTube (via ' + platform + ')'
+                                })
+                                
+                                if not music_queue[guild_id]['now_playing']:
+                                    await play_next_song(guild_id, interaction)
+                                
+                                await interaction.followup.send(
+                                    f"🎵 Found on YouTube: **{title}**\n"
+                                    f"💡 Tip: Direct {platform} links work best when track is available on YouTube"
+                                )
+                                return
+                    except:
+                        pass
+                
+                # Re-raise if we couldn't handle it
+                raise e
+        else:
+            # No info extracted - raise the last error we encountered
+            if last_error:
+                raise last_error
+            else:
+                raise Exception("Failed to extract audio information")
+    
+    except Exception as e:
+        logging.error(f"Error playing song: {e}")
+        error_msg = str(e).lower()
+        error_type = type(e).__name__
+        
+        # More specific error handling
+        if "private video" in error_msg or "video unavailable" in error_msg or "unavailable" in error_msg:
+            await interaction.followup.send(
+                f"❌ This track is unavailable or private.\n"
+                f"💡 Try searching for the song name instead of using a direct link!"
+            )
+        elif "sign in" in error_msg or "authentication" in error_msg or "login" in error_msg:
+            # Try fallback: search by query instead of URL
+            if platform != 'Search' and any(x in query for x in ['http', 'www', '.com']):
+                try:
+                    await interaction.followup.send(
+                        f"⚠️ Direct link failed. Trying search instead...\n"
+                        f"💡 If this keeps happening, try searching by song name!"
+                    )
+                    # Extract search terms from URL or use original query
+                    search_terms = query
+                    if platform == 'YouTube' and 'watch?v=' in query:
+                        # Try to extract video title or use generic search
+                        search_terms = query.split('watch?v=')[-1].split('&')[0]
+                    
+                    # Retry with search
+                    ydl_opts = prepare_ytdl_opts(search_terms, 'Search')
+                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                        info = ydl.extract_info(search_terms, download=False)
                         if 'entries' in info:
                             info = info['entries'][0]
                         
@@ -2159,31 +2264,47 @@ async def play_song(interaction: discord.Interaction, query: str):
                             music_queue[guild_id]['queue'].append({
                                 'url': url, 
                                 'title': title, 
-                                'platform': 'YouTube (via ' + platform + ')'
+                                'platform': platform
                             })
                             
                             if not music_queue[guild_id]['now_playing']:
                                 await play_next_song(guild_id, interaction)
                             
-                            await interaction.followup.send(
-                                f"🎵 Found on YouTube: **{title}**\n"
-                                f"💡 Tip: Direct {platform} links work best when track is available on YouTube"
-                            )
+                            await interaction.followup.send(f"✅ Found alternative: **{title}**")
                             return
-                    except:
-                        pass
-                
-                raise e
-    
-    except Exception as e:
-        logging.error(f"Error playing song: {e}")
-        error_msg = str(e)
-        if "Private video" in error_msg or "unavailable" in error_msg.lower():
-            await interaction.followup.send(f"❌ This track is unavailable or private. Try a different source!")
-        elif "Sign in" in error_msg or "authentication" in error_msg.lower():
-            await interaction.followup.send(f"❌ Authentication required. Some {platform} content may require login.")
+                except:
+                    pass
+            
+            await interaction.followup.send(
+                f"❌ Authentication/login required for this content.\n"
+                f"💡 **Try this instead:** Search for the song by name instead of using a direct link!\n"
+                f"Example: `/play query:Never Gonna Give You Up`"
+            )
+        elif "copyright" in error_msg or "blocked" in error_msg:
+            await interaction.followup.send(
+                f"❌ This track is blocked in your region or due to copyright.\n"
+                f"💡 Try a different source or search for a cover version!"
+            )
+        elif "http error" in error_msg or "network" in error_msg or "connection" in error_msg:
+            await interaction.followup.send(
+                f"❌ Network error. Please try again in a moment.\n"
+                f"💡 If this persists, the source might be temporarily unavailable."
+            )
+        elif "no video" in error_msg or "no results" in error_msg:
+            await interaction.followup.send(
+                f"❌ No results found for: `{query[:50]}`\n"
+                f"💡 Try a different search term or check the URL!"
+            )
         else:
-            await interaction.followup.send(f"❌ Error: {error_msg[:200]}")
+            # Show more helpful error message
+            error_display = str(e)[:200]
+            await interaction.followup.send(
+                f"❌ Error: {error_display}\n"
+                f"💡 **Troubleshooting:**\n"
+                f"• Try searching by song name instead of URL\n"
+                f"• Check if the link is valid\n"
+                f"• Try a different platform (YouTube, SoundCloud, etc.)"
+            )
 
 async def play_next_song(guild_id, interaction=None):
     """Play next song in queue"""
