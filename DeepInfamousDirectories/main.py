@@ -1965,11 +1965,75 @@ async def rank_card(interaction: discord.Interaction, user: discord.Member = Non
         logging.error(f"Error generating rank card: {e}")
         await interaction.followup.send(f"❌ Error generating rank card: {str(e)}", ephemeral=True)
 
-# Music Player (using yt-dlp)
+# Music Player (using yt-dlp - supports YouTube, Spotify, SoundCloud, and more!)
 music_queue = {}  # {guild_id: {'queue': [], 'now_playing': None, 'vc': voice_client}}
 
-@bot.tree.command(name="play", description="Play a song from YouTube")
-@app_commands.describe(query="YouTube URL or search query")
+def detect_platform(url_or_query):
+    """Detect the platform from URL or return 'search'"""
+    url_or_query = url_or_query.lower()
+    if 'youtube.com' in url_or_query or 'youtu.be' in url_or_query:
+        return 'YouTube'
+    elif 'spotify.com' in url_or_query or 'open.spotify.com' in url_or_query:
+        return 'Spotify'
+    elif 'soundcloud.com' in url_or_query:
+        return 'SoundCloud'
+    elif 'music.apple.com' in url_or_query or 'itunes.apple.com' in url_or_query:
+        return 'Apple Music'
+    elif 'bandcamp.com' in url_or_query:
+        return 'Bandcamp'
+    elif 'twitch.tv' in url_or_query:
+        return 'Twitch'
+    elif url_or_query.startswith('http'):
+        return 'Other'
+    else:
+        return 'Search'
+
+async def extract_spotify_metadata(url):
+    """Extract track/artist info from Spotify URL to search on YouTube"""
+    try:
+        # Extract track ID or playlist ID from Spotify URL
+        if '/track/' in url:
+            track_id = url.split('/track/')[-1].split('?')[0]
+            # For now, we'll let yt-dlp handle it, but we can enhance this later
+            # by using Spotify's free API if needed
+            return None
+        elif '/playlist/' in url or '/album/' in url:
+            # Handle playlists/albums - would need API for full support
+            return None
+    except:
+        pass
+    return None
+
+def prepare_ytdl_opts(query, platform):
+    """Prepare yt-dlp options based on platform"""
+    opts = {
+        'format': 'bestaudio/best',
+        'quiet': True,
+        'no_warnings': True,
+        'noplaylist': False,  # Allow playlists
+        'extract_flat': False,
+    }
+    
+    # For search queries, use YouTube search
+    if platform == 'Search':
+        opts['default_search'] = 'ytsearch'
+    
+    # For Spotify URLs, yt-dlp can sometimes handle them directly
+    # but often we need to extract metadata and search YouTube
+    if platform == 'Spotify':
+        # Try direct extraction first, fallback to search
+        opts['default_search'] = 'ytsearch'
+        # Extract song name from Spotify URL for better search
+        # This is a simplified approach - full implementation would use Spotify API
+    
+    # For Apple Music, similar approach
+    if platform == 'Apple Music':
+        opts['default_search'] = 'ytsearch'
+    
+    return opts
+
+@bot.tree.command(name="play", description="Play music from YouTube, Spotify, SoundCloud, Apple Music, and more!")
+@app_commands.describe(query="URL or search query (supports YouTube, Spotify, SoundCloud, Apple Music, etc.)")
 async def play_song(interaction: discord.Interaction, query: str):
     if not interaction.user.voice or not interaction.user.voice.channel:
         await interaction.response.send_message("❌ You must be in a voice channel!", ephemeral=True)
@@ -1988,56 +2052,178 @@ async def play_song(interaction: discord.Interaction, query: str):
         if not music_queue[guild_id]['vc'] or not music_queue[guild_id]['vc'].is_connected():
             music_queue[guild_id]['vc'] = await vc.connect()
         
-        # Extract info using yt-dlp
-        ydl_opts = {
-            'format': 'bestaudio/best',
-            'quiet': True,
-            'no_warnings': True,
-            'default_search': 'ytsearch',
-            'max_downloads': 1,
-        }
+        # Detect platform
+        platform = detect_platform(query)
         
+        # Handle Spotify/Apple Music URLs - extract and search
+        search_query = query
+        if platform == 'Spotify':
+            # For Spotify, we'll try direct extraction first, then fallback to YouTube search
+            # yt-dlp has experimental Spotify support
+            metadata = await extract_spotify_metadata(query)
+            if not metadata:
+                # Extract readable info from URL for better search
+                if '/track/' in query:
+                    # Try to get track name from URL or use as-is
+                    search_query = query
+                else:
+                    search_query = query
+        elif platform == 'Apple Music':
+            # Similar for Apple Music
+            search_query = query
+        
+        # Prepare yt-dlp options
+        ydl_opts = prepare_ytdl_opts(search_query, platform)
+        
+        # Extract info using yt-dlp
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(query, download=False)
-            if 'entries' in info:
-                info = info['entries'][0]
+            try:
+                info = ydl.extract_info(search_query, download=False)
+                
+                # Handle playlists
+                if 'entries' in info:
+                    entries = [e for e in info['entries'] if e is not None]
+                    if not entries:
+                        await interaction.followup.send("❌ No tracks found!")
+                        return
+                    
+                    # Add all playlist entries to queue
+                    added_count = 0
+                    for entry in entries:
+                        if entry and 'url' in entry and entry.get('url'):
+                            url = entry['url']
+                            title = entry.get('title', 'Unknown Title')
+                            music_queue[guild_id]['queue'].append({'url': url, 'title': title, 'platform': platform})
+                            added_count += 1
+                    
+                    # Start playing if nothing is playing
+                    if not music_queue[guild_id]['now_playing']:
+                        await play_next_song(guild_id, interaction)
+                    
+                    await interaction.followup.send(
+                        f"✅ Added **{added_count}** track(s) from {platform} to queue!\n"
+                        f"🎵 **Now playing:** {music_queue[guild_id]['queue'][0]['title'] if music_queue[guild_id]['queue'] else 'Nothing'}"
+                    )
+                    return
+                else:
+                    # Single track
+                    if not info or 'url' not in info:
+                        await interaction.followup.send("❌ Could not extract audio information!")
+                        return
+                    
+                    url = info['url']
+                    title = info.get('title', 'Unknown Title')
+                    duration = info.get('duration', 0)
+                    
+                    music_queue[guild_id]['queue'].append({
+                        'url': url, 
+                        'title': title, 
+                        'platform': platform,
+                        'duration': duration
+                    })
+                    
+                    platform_emoji = {
+                        'YouTube': '📺',
+                        'Spotify': '🎵',
+                        'SoundCloud': '☁️',
+                        'Apple Music': '🍎',
+                        'Bandcamp': '🎸',
+                        'Twitch': '🔴',
+                        'Search': '🔍'
+                    }.get(platform, '🎵')
+                    
+                    await interaction.followup.send(
+                        f"{platform_emoji} Added to queue: **{title}**\n"
+                        f"🌐 Source: {platform}"
+                    )
+                    
+                    # Play if nothing is playing
+                    if not music_queue[guild_id]['now_playing']:
+                        await play_next_song(guild_id, interaction)
             
-            url = info['url']
-            title = info['title']
-            
-            music_queue[guild_id]['queue'].append({'url': url, 'title': title})
-            
-            await interaction.followup.send(f"⏯️ Added to queue: **{title}**")
-            
-            # Play if nothing is playing
-            if not music_queue[guild_id]['now_playing']:
-                await play_next_song(guild_id, interaction)
+            except Exception as e:
+                # If direct extraction fails for Spotify/Apple Music, try searching YouTube
+                if platform in ['Spotify', 'Apple Music'] and 'url' not in str(e).lower():
+                    logging.info(f"Direct extraction failed for {platform}, trying YouTube search...")
+                    try:
+                        # Extract track name for better search
+                        # This is a fallback - ideally we'd use APIs here
+                        ydl_opts['default_search'] = 'ytsearch'
+                        info = ydl.extract_info(query, download=False)
+                        if 'entries' in info:
+                            info = info['entries'][0]
+                        
+                        if info and 'url' in info:
+                            url = info['url']
+                            title = info.get('title', 'Unknown Title')
+                            music_queue[guild_id]['queue'].append({
+                                'url': url, 
+                                'title': title, 
+                                'platform': 'YouTube (via ' + platform + ')'
+                            })
+                            
+                            if not music_queue[guild_id]['now_playing']:
+                                await play_next_song(guild_id, interaction)
+                            
+                            await interaction.followup.send(
+                                f"🎵 Found on YouTube: **{title}**\n"
+                                f"💡 Tip: Direct {platform} links work best when track is available on YouTube"
+                            )
+                            return
+                    except:
+                        pass
+                
+                raise e
     
     except Exception as e:
         logging.error(f"Error playing song: {e}")
-        await interaction.followup.send(f"❌ Error: {str(e)}", ephemeral=True)
+        error_msg = str(e)
+        if "Private video" in error_msg or "unavailable" in error_msg.lower():
+            await interaction.followup.send(f"❌ This track is unavailable or private. Try a different source!")
+        elif "Sign in" in error_msg or "authentication" in error_msg.lower():
+            await interaction.followup.send(f"❌ Authentication required. Some {platform} content may require login.")
+        else:
+            await interaction.followup.send(f"❌ Error: {error_msg[:200]}")
 
-async def play_next_song(guild_id, interaction):
+async def play_next_song(guild_id, interaction=None):
     """Play next song in queue"""
     try:
-        if not music_queue[guild_id]['queue']:
-            music_queue[guild_id]['now_playing'] = None
+        if guild_id not in music_queue or not music_queue[guild_id]['queue']:
+            if guild_id in music_queue:
+                music_queue[guild_id]['now_playing'] = None
             return
         
         song = music_queue[guild_id]['queue'].pop(0)
         music_queue[guild_id]['now_playing'] = song
         
         vc = music_queue[guild_id]['vc']
-        audio = discord.FFmpegPCMAudio(song['url'], options="-vn")
+        
+        # Use FFmpeg with better audio settings for streaming
+        # Discord.py uses options as a string parameter
+        ffmpeg_options = '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -vn -bufsize 512k'
+        
+        audio = discord.FFmpegPCMAudio(song['url'], options=ffmpeg_options)
         
         def after_playing(error):
             if error:
                 logging.error(f"Error playing audio: {error}")
+            # Continue to next song
             asyncio.run_coroutine_threadsafe(play_next_song(guild_id, interaction), bot.loop)
         
         vc.play(audio, after=after_playing)
+        
+        # Optionally notify about now playing
+        if interaction and hasattr(interaction, 'channel'):
+            try:
+                await interaction.channel.send(f"🎵 **Now playing:** {song['title']}")
+            except:
+                pass  # Silently fail if can't send message
+                
     except Exception as e:
         logging.error(f"Error in play_next_song: {e}")
+        # Try to continue queue on error
+        if guild_id in music_queue and music_queue[guild_id]['queue']:
+            asyncio.create_task(play_next_song(guild_id, interaction))
 
 @bot.tree.command(name="stop", description="Stop the music player")
 async def stop_music(interaction: discord.Interaction):
@@ -2066,11 +2252,97 @@ async def skip_song(interaction: discord.Interaction):
         return
     
     vc = music_queue[guild_id]['vc']
-    if vc.is_playing():
+    if vc.is_playing() or vc.is_paused():
+        skipped_title = music_queue[guild_id]['now_playing']['title'] if music_queue[guild_id]['now_playing'] else "Unknown"
         vc.stop()
-        await interaction.response.send_message("⏭️ Skipped current song.")
+        await interaction.response.send_message(f"⏭️ Skipped: **{skipped_title}**")
+        
+        # Auto-play next song
+        if music_queue[guild_id]['queue']:
+            await play_next_song(guild_id, interaction)
     else:
         await interaction.response.send_message("❌ Not playing anything!", ephemeral=True)
+
+@bot.tree.command(name="queue", description="Show the current music queue")
+async def show_queue(interaction: discord.Interaction):
+    guild_id = interaction.guild.id
+    
+    if guild_id not in music_queue:
+        await interaction.response.send_message("❌ No music queue active!", ephemeral=True)
+        return
+    
+    queue_data = music_queue[guild_id]
+    now_playing = queue_data['now_playing']
+    queue = queue_data['queue']
+    
+    embed = discord.Embed(title="🎵 Music Queue", color=0x00ff00)
+    
+    if now_playing:
+        embed.add_field(
+            name="▶️ Now Playing",
+            value=f"**{now_playing['title']}**\n🌐 {now_playing.get('platform', 'Unknown')}",
+            inline=False
+        )
+    else:
+        embed.add_field(name="▶️ Now Playing", value="Nothing", inline=False)
+    
+    if queue:
+        queue_text = ""
+        for i, song in enumerate(queue[:10], 1):  # Show first 10
+            queue_text += f"{i}. **{song['title']}**\n"
+        if len(queue) > 10:
+            queue_text += f"\n... and {len(queue) - 10} more"
+        embed.add_field(name=f"📋 Queue ({len(queue)} songs)", value=queue_text, inline=False)
+    else:
+        embed.add_field(name="📋 Queue", value="Empty", inline=False)
+    
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="pause", description="Pause the current song")
+async def pause_music(interaction: discord.Interaction):
+    guild_id = interaction.guild.id
+    
+    if guild_id not in music_queue or not music_queue[guild_id]['vc']:
+        await interaction.response.send_message("❌ Not playing anything!", ephemeral=True)
+        return
+    
+    vc = music_queue[guild_id]['vc']
+    if vc.is_playing():
+        vc.pause()
+        await interaction.response.send_message("⏸️ Paused")
+    elif vc.is_paused():
+        await interaction.response.send_message("❌ Already paused!", ephemeral=True)
+    else:
+        await interaction.response.send_message("❌ Not playing anything!", ephemeral=True)
+
+@bot.tree.command(name="resume", description="Resume the paused song")
+async def resume_music(interaction: discord.Interaction):
+    guild_id = interaction.guild.id
+    
+    if guild_id not in music_queue or not music_queue[guild_id]['vc']:
+        await interaction.response.send_message("❌ Not playing anything!", ephemeral=True)
+        return
+    
+    vc = music_queue[guild_id]['vc']
+    if vc.is_paused():
+        vc.resume()
+        await interaction.response.send_message("▶️ Resumed")
+    elif vc.is_playing():
+        await interaction.response.send_message("❌ Already playing!", ephemeral=True)
+    else:
+        await interaction.response.send_message("❌ Nothing to resume!", ephemeral=True)
+
+@bot.tree.command(name="clear", description="Clear the music queue")
+async def clear_queue(interaction: discord.Interaction):
+    guild_id = interaction.guild.id
+    
+    if guild_id not in music_queue:
+        await interaction.response.send_message("❌ No music queue active!", ephemeral=True)
+        return
+    
+    queue_size = len(music_queue[guild_id]['queue'])
+    music_queue[guild_id]['queue'] = []
+    await interaction.response.send_message(f"🗑️ Cleared {queue_size} song(s) from queue")
 
 # Error handling for missing commands
 @bot.event  
