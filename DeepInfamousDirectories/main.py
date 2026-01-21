@@ -749,8 +749,21 @@ def generate_rank_card(member, level, current_xp, xp_for_current, xp_for_next, r
     """Generate a beautiful rank card image"""
     # Create image with more compact dimensions
     width, height = 700, 250
-    card = Image.new('RGB', (width, height), color=(47, 49, 54))  # Discord dark theme
+    card = Image.new('RGB', (width, height))
     draw = ImageDraw.Draw(card)
+
+    # Create a more colorful background
+    # Draw a gradient background from top to bottom
+    for y in range(height):
+        # Create a gradient from dark blue to lighter blue/purple
+        r = int(25 + (y / height) * 30)
+        g = int(30 + (y / height) * 35)
+        b = int(40 + (y / height) * 60)
+        draw.line([(0, y), (width, y)], fill=(r, g, b))
+
+    # Draw a decorative background element
+    draw.rectangle([0, 0, width, 30], fill=(70, 80, 150, 180))  # Top banner
+    draw.rectangle([0, height-30, width, height], fill=(70, 80, 150, 180))  # Bottom banner
 
     # Try to load fonts (fall back to default if not available)
     try:
@@ -764,11 +777,6 @@ def generate_rank_card(member, level, current_xp, xp_for_current, xp_for_next, r
         stat_font = ImageFont.load_default()
         small_stat_font = ImageFont.load_default()
 
-    # Draw background with a subtle gradient
-    for y in range(height):
-        color_value = int(47 + (y / height) * 10)
-        draw.line([(0, y), (width, y)], fill=(color_value, color_value + 2, color_value + 5))
-
     # Draw user avatar (circle)
     try:
         avatar_response = requests.get(member.display_avatar.url)
@@ -781,61 +789,97 @@ def generate_rank_card(member, level, current_xp, xp_for_current, xp_for_next, r
         mask_draw = ImageDraw.Draw(mask)
         mask_draw.ellipse([0, 0, avatar_size, avatar_size], fill=255)
 
-        # Create border circle
-        border_draw = ImageDraw.Draw(card)
-        border_draw.ellipse([25, 30, 25 + avatar_size, 30 + avatar_size], outline=(88, 101, 242), width=3)
+        # Create a colorful border for the avatar
+        border_radius = 55
+        border_center_x, border_center_y = 77, 80  # Center of avatar position
+        draw.ellipse([border_center_x - border_radius, border_center_y - border_radius,
+                      border_center_x + border_radius, border_center_y + border_radius],
+                     outline=(255, 215, 0), width=4)  # Gold border
 
         # Paste avatar
-        card.paste(avatar, (27, 32), mask)
+        card.paste(avatar, (27, 30), mask)
     except:
         pass
 
-    # Draw username
-    draw.text((140, 35), member.name[:20], font=name_font, fill=(255, 255, 255))
+    # Draw username with shadow effect
+    username = member.name[:20]
+    draw.text((140, 35), username, font=name_font, fill=(255, 255, 255))
+    # Add shadow
+    draw.text((141, 36), username, font=name_font, fill=(0, 0, 0, 128))
 
-    # Draw level badge
-    level_bg = (88, 101, 242)  # Discord blurple
-    draw.rounded_rectangle([550, 30, 670, 80], radius=10, fill=level_bg)
+    # Draw level badge with gradient background
+    level_bg_top = (88, 101, 242)  # Discord blurple
+    level_bg_bottom = (155, 89, 182)  # Purple
+    # Draw gradient rectangle for level badge
+    for y in range(30, 80):
+        gradient_factor = (y - 30) / (80 - 30)
+        r = int(level_bg_top[0] + (level_bg_bottom[0] - level_bg_top[0]) * gradient_factor)
+        g = int(level_bg_top[1] + (level_bg_bottom[1] - level_bg_top[1]) * gradient_factor)
+        b = int(level_bg_top[2] + (level_bg_bottom[2] - level_bg_top[2]) * gradient_factor)
+        draw.line([(550, y), (670, y)], fill=(r, g, b))
+
+    # Draw rounded corners for level badge
+    draw.rounded_rectangle([550, 30, 670, 80], radius=15, fill=None, outline=(255, 255, 255), width=2)
     draw.text((595, 40), f"LVL {level}", font=level_font, fill=(255, 255, 255))
 
-    # Draw rank position with medal icon
+    # Draw rank position with gold color
     rank_text = f"#{rank_position}"
     draw.text((140, 75), f"Rank: {rank_text}", font=stat_font, fill=(255, 215, 0))  # Gold color
 
-    # Draw XP bar
+    # Draw XP bar with gradient background
     bar_width = 500
-    bar_height = 20
+    bar_height = 25
     bar_x = 140
     bar_y = 120
 
-    # Background bar with rounded edges
-    draw.rounded_rectangle([bar_x, bar_y, bar_x + bar_width, bar_y + bar_height], radius=10, fill=(60, 60, 60))
+    # Draw gradient background bar
+    for x in range(bar_width):
+        gradient_pos = x / bar_width
+        r = int(60 + gradient_pos * 40)
+        g = int(60 + gradient_pos * 30)
+        b = int(80 + gradient_pos * 20)
+        draw.line([(bar_x + x, bar_y), (bar_x + x, bar_y + bar_height)], fill=(r, g, b))
 
-    # XP progress with gradient effect
+    # Draw XP progress with colorful gradient
     xp_in_level = current_xp - xp_for_current
     xp_needed = xp_for_next - xp_for_current
     progress_width = int((xp_in_level / xp_needed) * bar_width) if xp_needed > 0 else 0
 
-    # Draw progress with gradient effect
-    for i in range(progress_width):
-        # Create a gradient from blue to purple
-        r = int(88 + (i / progress_width) * 50) if progress_width > 0 else 88
-        g = int(166 + (i / progress_width) * 20) if progress_width > 0 else 166
-        b = int(255 - (i / progress_width) * 50) if progress_width > 0 else 255
-        draw.line([(bar_x + i, bar_y), (bar_x + i, bar_y + bar_height)], fill=(r, g, b))
+    if progress_width > 0:
+        # Draw progress with rainbow-like gradient
+        for i in range(progress_width):
+            # Create a rainbow gradient
+            hue_pos = (i / progress_width) * 6
+            if hue_pos < 1:  # Red to yellow
+                r, g, b = 255, int(255 * hue_pos), 0
+            elif hue_pos < 2:  # Yellow to green
+                r, g, b = int(255 * (2 - hue_pos)), 255, 0
+            elif hue_pos < 3:  # Green to cyan
+                r, g, b = 0, 255, int(255 * (hue_pos - 2))
+            elif hue_pos < 4:  # Cyan to blue
+                r, g, b = 0, int(255 * (4 - hue_pos)), 255
+            elif hue_pos < 5:  # Blue to magenta
+                r, g, b = int(255 * (hue_pos - 4)), 0, 255
+            else:  # Magenta to red
+                r, g, b = 255, 0, int(255 * (6 - hue_pos))
 
-    # XP text overlay
+            draw.line([(bar_x + i, bar_y), (bar_x + i, bar_y + bar_height)], fill=(int(r), int(g), int(b)))
+
+    # Draw border around XP bar
+    draw.rounded_rectangle([bar_x, bar_y, bar_x + bar_width, bar_y + bar_height], radius=12, outline=(255, 255, 255), width=2)
+
+    # XP text overlay (centered in the progress bar)
     xp_text = f"{xp_in_level:,} / {xp_needed:,} XP"
     text_bbox = draw.textbbox((0, 0), xp_text, font=small_stat_font)
     text_width = text_bbox[2] - text_bbox[0]
     text_x = bar_x + (bar_width - text_width) // 2
-    draw.text((text_x, bar_y + 2), xp_text, font=small_stat_font, fill=(255, 255, 255))
+    draw.text((text_x, bar_y + 5), xp_text, font=small_stat_font, fill=(255, 255, 255))
 
     # Draw total XP
     total_xp_text = f"Total XP: {current_xp:,}"
-    draw.text((140, 155), total_xp_text, font=stat_font, fill=(180, 180, 180))
+    draw.text((140, 160), total_xp_text, font=stat_font, fill=(200, 230, 255))  # Light blue
 
-    # Draw server icon
+    # Draw server icon with circular frame
     try:
         logo_response = requests.get(guild_icon_url)
         logo = Image.open(BytesIO(logo_response.content)).convert('RGBA')
@@ -847,13 +891,19 @@ def generate_rank_card(member, level, current_xp, xp_for_current, xp_for_next, r
         logo_mask_draw = ImageDraw.Draw(logo_mask)
         logo_mask_draw.ellipse([0, 0, logo_size, logo_size], fill=255)
 
+        # Create a frame for the server icon
+        icon_frame_x, icon_frame_y = width - 80, height - 80
+        draw.ellipse([icon_frame_x - 5, icon_frame_y - 5,
+                      icon_frame_x + logo_size + 5, icon_frame_y + logo_size + 5],
+                     outline=(255, 215, 0), width=3)  # Gold frame
+
         # Paste server icon
-        card.paste(logo, (width - 80, height - 80), logo_mask)
+        card.paste(logo, (icon_frame_x, icon_frame_y), logo_mask)
     except:
         pass
 
-    # Add a subtle border
-    draw.rectangle([0, 0, width-1, height-1], outline=(88, 101, 242), width=2)
+    # Add a subtle outer border
+    draw.rectangle([0, 0, width-1, height-1], outline=(100, 150, 255), width=3)
 
     # Save to bytes
     img_bytes = BytesIO()
@@ -2612,6 +2662,31 @@ async def snipe(interaction: discord.Interaction):
 
     await interaction.response.send_message(embed=embed)
 
+
+@bot.command(name="s")
+async def prefix_snipe(ctx):
+    """Show the last deleted message in the current channel"""
+    channel_id = ctx.channel.id
+
+    if channel_id not in deleted_messages:
+        await ctx.send("❌ No deleted messages to snipe in this channel!")
+        return
+
+    deleted_msg = deleted_messages[channel_id]
+
+    embed = discord.Embed(
+        title="🗑️ Sniped Message",
+        description=deleted_msg['content'],
+        color=0xff0000,
+        timestamp=deleted_msg['timestamp']
+    )
+
+    embed.set_author(name=deleted_msg['author'])
+    embed.set_footer(text=f"Deleted at")
+
+    await ctx.send(embed=embed)
+
+
 @bot.tree.command(name="rank", description="Check your or someone else's rank and XP")
 @app_commands.describe(user="User to check rank for (optional)")
 async def check_rank(interaction: discord.Interaction, user: discord.Member = None):
@@ -2643,6 +2718,39 @@ async def check_rank(interaction: discord.Interaction, user: discord.Member = No
     embed.set_thumbnail(url=target_user.avatar.url if target_user.avatar else target_user.default_avatar.url)
 
     await interaction.response.send_message(embed=embed)
+
+
+@bot.command(name="rank")
+async def prefix_check_rank(ctx, user: discord.Member = None):
+    """Check your or someone else's rank and XP"""
+    target_user = user or ctx.author
+    progress = get_level_progress(target_user.id, target_user)
+
+    embed = discord.Embed(
+        title=f"📊 Rank Stats for {target_user.display_name}",
+        color=target_user.color if target_user.color.value != 0 else 0x7289da
+    )
+
+    embed.add_field(name="📈 Level", value=f"**{progress['level']}**", inline=True)
+    embed.add_field(name="✨ Total XP", value=f"**{progress['current_xp']:,}**", inline=True)
+    embed.add_field(name="🚀 XP Multiplier", value=f"**{progress['multiplier']:.2f}x**", inline=True)
+
+    # Progress bar
+    progress_bar = "▓" * int(progress['progress_percent'] / 10) + "░" * (10 - int(progress['progress_percent'] / 10))
+    embed.add_field(
+        name="📊 Progress to Next Level",
+        value=f"```{progress_bar} {progress['progress_percent']:.1f}%```\n"
+              f"**{progress['xp_in_level']:,}** / **{progress['xp_needed_for_level']:,}** XP",
+        inline=False
+    )
+
+    if progress['booster_multiplier'] > 1.0:
+        booster_bonus = int((progress['booster_multiplier'] - 1.0) * 100)
+        embed.add_field(name="💎 Booster Bonus", value=f"**+{booster_bonus}% XP**", inline=True)
+
+    embed.set_thumbnail(url=target_user.avatar.url if target_user.avatar else target_user.default_avatar.url)
+
+    await ctx.send(embed=embed)
 
 @bot.tree.command(name="level-leaderboard", description="Show the server XP leaderboard")
 async def level_leaderboard(interaction: discord.Interaction):
@@ -2808,7 +2916,53 @@ async def play_song(interaction: discord.Interaction, query: str):
             await interaction.followup.send("❌ YouTube is asking for verification. This usually happens due to too many requests. Try using a direct link instead of search terms, or try again later. You can also try providing a cookies.txt file for better YouTube access.", ephemeral=True)
         elif "Requested format is not available" in str(e):
             logging.error(f"Format not available: {e}")
-            await interaction.followup.send("❌ The requested video format is not available. Try a different video.", ephemeral=True)
+            # Try alternative format options
+            alt_formats = [
+                'bestaudio',
+                'worstaudio',
+                'best',
+                'mp4',
+                'm4a',
+                'webm'
+            ]
+
+            for fmt in alt_formats:
+                try:
+                    alt_ydl_opts = {
+                        'format': fmt,
+                        'quiet': True,
+                        'no_warnings': True,
+                        'default_search': 'ytsearch',
+                        'max_downloads': 1,
+                        'extractor_args': {
+                            'youtube': {
+                                'player_client': ['android', 'web'],
+                            }
+                        },
+                        'cookiefile': 'cookies.txt' if os.path.exists('cookies.txt') else None,
+                    }
+
+                    with yt_dlp.YoutubeDL(alt_ydl_opts) as ydl:
+                        info = ydl.extract_info(query, download=False)
+                        if 'entries' in info:
+                            info = info['entries'][0]
+
+                        url = info['url']
+                        title = info['title']
+
+                        music_queue[guild_id]['queue'].append({'url': url, 'title': title})
+
+                        await interaction.followup.send(f"🎵 Added to queue (using alt format '{fmt}'): **{title}**")
+
+                        # Play if nothing is playing
+                        if not music_queue[guild_id]['now_playing']:
+                            await play_next_song(guild_id, interaction)
+                        return  # Success with alternative format
+                except Exception:
+                    continue  # Try next format
+
+            # If all alternative formats fail
+            await interaction.followup.send("❌ The requested video format is not available. This might be due to regional restrictions, age restrictions, or the video being unavailable. Try a different video.", ephemeral=True)
         else:
             logging.error(f"Download error: {e}")
             await interaction.followup.send(f"❌ Download error: {str(e)}", ephemeral=True)
@@ -2893,6 +3047,147 @@ async def stop_music(interaction: discord.Interaction):
         if vc.is_connected():
             await vc.disconnect()
         await interaction.response.send_message("⏹️ Music stopped and queue cleared.")
+
+
+@bot.tree.command(name="level-perks", description="Show information about level perks")
+async def level_perks(interaction: discord.Interaction):
+    """Show information about level perks"""
+    embed = discord.Embed(
+        title="🧠 Level Perks",
+        description="Special rewards for the most active members in SS | Silver Saints Clan.\nHigher levels unlock better perks and cleaner roles.",
+        color=0x5865F2
+    )
+
+    # Add level perks fields
+    embed.add_field(
+        name="🥉 Noob | Level 5",
+        value="・Permission to stream in voice channels",
+        inline=False
+    )
+    embed.add_field(
+        name="⚔️ Fighter | Level 10",
+        value="・Eligible to apply for staff",
+        inline=False
+    )
+    embed.add_field(
+        name="📷 Rookie | Level 15",
+        value="・Can post images in 💬│chat (not just #media)",
+        inline=False
+    )
+    embed.add_field(
+        name="🔗 Linker | Level 20",
+        value="・Can send links in any unlocked chat channel",
+        inline=False
+    )
+    embed.add_field(
+        name="🎉 Lucky | Level 25",
+        value="・+1 Extra Giveaway Entry (Stacks)",
+        inline=False
+    )
+    embed.add_field(
+        name="🎧 Vibin' | Level 30",
+        value="・Can use soundboard in VCs",
+        inline=False
+    )
+    embed.add_field(
+        name="💎 Grinder | Level 35",
+        value="・+1 Extra Giveaway Entry (Stacks)\n・+10% XP Boost (Stacks)",
+        inline=False
+    )
+    embed.add_field(
+        name="🕵️ Sniper | Level 40",
+        value="・Can use `,s` to snipe deleted messages",
+        inline=False
+    )
+    embed.add_field(
+        name="🔥 Active | Level 50",
+        value="・+10% XP Boost (Stacks)",
+        inline=False
+    )
+    embed.add_field(
+        name="🌟 Elite | Level 60",
+        value="・+3 Extra Giveaway Entries (Stacks)",
+        inline=False
+    )
+    embed.add_field(
+        name="🏆 VIP | Level 70",
+        value="・Priority support in tickets",
+        inline=False
+    )
+    embed.add_field(
+        name="👑 Royal | Level 80",
+        value="・+10% XP Boost (Stacks)\n・Instant access to IGC tryouts for SS Clan\n・+4 Extra Giveaway Entries (Stacks)",
+        inline=False
+    )
+    embed.add_field(
+        name="💼 SS Veteran | Level 90",
+        value="・Trusted by leadership\n・Get noticed for clan promotions",
+        inline=False
+    )
+    embed.add_field(
+        name="🌌 Legend | Level 100",
+        value="・Earn a permanent custom role (name & color)\n・Top-tier status in the server",
+        inline=False
+    )
+
+    embed.add_field(
+        name="📈 XP Boost Info",
+        value="> - Level 35+: +10% XP\n> - Level 50+: +10% XP\n> - Level 80+: +10% XP\n*(These stack with booster XP perks)*",
+        inline=False
+    )
+
+    await interaction.response.send_message(embed=embed)
+
+
+@bot.tree.command(name="booster-perks", description="Show information about booster perks")
+async def booster_perks(interaction: discord.Interaction):
+    """Show information about booster perks"""
+    embed = discord.Embed(
+        title="🔋 SS Clan Booster Perks",
+        description="Boosting gives you stackable rewards — every time you go up a tier (1→2→3+), you keep everything from previous ones.",
+        color=0xFFD700
+    )
+
+    embed.add_field(
+        name="🔹 Server Booster (1 Boost)",
+        value="🎟️ 3x Giveaway Entries\n"
+              "💎 Booster Role\n"
+              "🗨️ Permission to use ,s command (to snipe deleted messages)\n"
+              "🖼️ Permission to post images in chat\n"
+              "🚀 10% XP Boost when chatting\n"
+              "💀 Access to Booster-Only Giveaways\n"
+              "📢 Shoutout in the Boost Channel\n"
+              "🎖️ Boosting Badge on Your Profile (In server)",
+        inline=False
+    )
+
+    embed.add_field(
+        name="🔸 Super Booster (2 Boosts)",
+        value="🎟️ 5x Giveaway Entries\n"
+              "💬 Access to Booster-Only Chat Channels\n"
+              "🚀 20% XP Boost when chatting\n"
+              "🎖️ Everything from Server Booster",
+        inline=False
+    )
+
+    embed.add_field(
+        name="🔺 Mega Booster (3+ Boosts)",
+        value="🎟️ 7x Giveaway Entries\n"
+              "🗣️ Priority in Any Shoutouts\n"
+              "🚀 30% XP Boost when chatting\n"
+              "🎖️ Everything from Super & Server Booster",
+        inline=False
+    )
+
+    embed.add_field(
+        name="Note:",
+        value="You can gain additional XP boosts based on your level. Check the ⁠🍪・｜level-perks channel for more information.\n\n"
+              "Boosting helps keep the clan strong. To claim perks or upgrade, please DM Staff with proof if needed.",
+        inline=False
+    )
+
+    await interaction.response.send_message(embed=embed)
+
 
 @bot.tree.command(name="skip", description="Skip current song")
 async def skip_song(interaction: discord.Interaction):
