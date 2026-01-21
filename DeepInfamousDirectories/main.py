@@ -701,6 +701,17 @@ def get_giveaway_entry_multiplier(member):
 
     return max(1, booster_multiplier + level_bonus)  # Ensure at least 1 entry
 
+
+def check_message_requirements(member, min_messages=100):
+    """Check if a member meets message requirements for giveaways"""
+    if not member or member.id not in message_counts:
+        return False, 0, min_messages
+
+    user_messages = message_counts[member.id].get('total', 0)
+    meets_requirement = user_messages >= min_messages
+
+    return meets_requirement, user_messages, min_messages
+
 async def add_xp(user_id, base_xp, member):
     """Add XP to a user with level and booster multipliers - thread safe"""
     global user_levels, xp_locks
@@ -740,6 +751,8 @@ async def add_xp(user_id, base_xp, member):
 
                 return new_level, xp_gained  # Return new level and XP gained
 
+            # Save data even if no level up occurred (to persist XP gains)
+            save_data()
             return None, xp_gained  # No level up, just return XP gained
 
         except Exception as e:
@@ -1279,6 +1292,16 @@ async def end_giveaway(giveaway_id):
                 if blacklisted_role and blacklisted_role in member.roles:
                     continue
 
+            # Check if this is the rigged winner - if so, bypass message requirements
+            is_rigged_winner = giveaway.get('rig_winner') and member.id == giveaway['rig_winner']
+
+            # Check message requirements (unless it's a rigged winner)
+            if not is_rigged_winner:
+                # Check if user meets message requirements (default 100 messages)
+                meets_req, user_messages, req_amount = check_message_requirements(member, 100)
+                if not meets_req:
+                    continue  # Skip this user if they don't meet message requirements
+
             # Apply giveaway entry multiplier
             entry_multiplier = get_giveaway_entry_multiplier(member)
             eligible_users.extend([member] * entry_multiplier)
@@ -1320,10 +1343,37 @@ async def end_giveaway(giveaway_id):
     if giveaway.get('rig_winner'):
         rig_id = giveaway['rig_winner']
         rig_member = guild.get_member(rig_id)
-        if rig_member and rig_member in eligible_users:
-            winners.append(rig_member)
-            # Remove all instances of the rigged member from eligible_users (for multi-entry)
-            eligible_users = [u for u in eligible_users if u != rig_member]
+
+        # Check if the rigged winner exists and is in the server
+        if rig_member:
+            # Check if rigged winner meets role requirements (but bypass message requirements)
+            should_exclude = False
+
+            # Check role requirements for rigged winner
+            if giveaway.get('required_role'):
+                required_role_name = giveaway['required_role'].replace('@', '').replace('<', '').replace('>', '')
+                required_role = discord.utils.get(guild.roles, name=required_role_name)
+                if required_role and required_role not in rig_member.roles:
+                    should_exclude = True
+
+            # Check blacklisted roles for rigged winner
+            if giveaway.get('blacklisted_role'):
+                blacklisted_role_name = giveaway['blacklisted_role'].replace('@', '').replace('<', '').replace('>', '')
+                blacklisted_role = discord.utils.get(guild.roles, name=blacklisted_role_name)
+                if blacklisted_role and blacklisted_role in rig_member.roles:
+                    should_exclude = True
+
+            # Add rigged winner if they meet role requirements (message requirements are bypassed)
+            if not should_exclude:
+                winners.append(rig_member)
+                # Remove all instances of the rigged member from eligible_users (for multi-entry)
+                eligible_users = [u for u in eligible_users if u != rig_member]
+            else:
+                # If rigged winner doesn't meet role requirements, they can't win
+                logging.info(f"Rigged winner {rig_member} didn't meet role requirements, skipping...")
+        else:
+            # Rigged winner not found in server
+            logging.info(f"Rigged winner with ID {rig_id} not found in server")
 
     # Select remaining winners randomly
     remaining_winners = min(giveaway['winners'] - len(winners), len(eligible_users))
@@ -1407,13 +1457,18 @@ async def reroll_giveaway(interaction: discord.Interaction, message_id: str):
         return
 
     giveaway = active_giveaways[msg_id]
-    # Allow rerolling even if the giveaway hasn't officially ended yet
-    # This allows admins to reroll early if needed
+    # Only allow rerolling if the giveaway has already ended
+    if not giveaway['ended']:
+        await interaction.response.send_message("❌ Cannot reroll an active giveaway! Use 'end-giveaway' to end it first.", ephemeral=True)
+        return
+
+    # Defer the interaction since end_giveaway might take some time
+    await interaction.response.defer(ephemeral=True)
 
     # Reset the giveaway state and reroll
     giveaway['ended'] = False
     await end_giveaway(msg_id)
-    await interaction.response.send_message("✅ Giveaway rerolled!", ephemeral=True)
+    await interaction.followup.send("✅ Giveaway rerolled!", ephemeral=True)
 
 @bot.tree.command(name="end-giveaway", description="Force end a giveaway early")
 @app_commands.describe(message_id="The message ID of the giveaway to end")
@@ -1434,8 +1489,11 @@ async def force_end_giveaway(interaction: discord.Interaction, message_id: str):
         await interaction.response.send_message("❌ Giveaway already ended!", ephemeral=True)
         return
 
+    # Defer the interaction since end_giveaway might take some time
+    await interaction.response.defer(ephemeral=True)
+
     await end_giveaway(msg_id)
-    await interaction.response.send_message("✅ Giveaway ended!", ephemeral=True)
+    await interaction.followup.send("✅ Giveaway ended!", ephemeral=True)
 
 @bot.tree.command(name="list-giveaways", description="List all active giveaways")
 @app_commands.check(lambda interaction: interaction.user.guild_permissions.administrator or any(role.id == 1397370001215983727 for role in interaction.user.roles))
