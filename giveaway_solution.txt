@@ -1,0 +1,76 @@
+GIVEAWAY TROUBLESHOOTING GUIDE
+==================================================
+
+Based on my analysis of your Discord bot code, here are the most likely reasons
+why your giveaway didn't announce a winner or send DMs:
+
+POSSIBLE CAUSES:
+1. No one participated - Check if anyone reacted to your giveaway message with :tada:
+2. Participants didn't meet requirements - Bot requires 100+ messages by default
+3. Winner had DMs disabled - Bot tried to DM winner but was blocked
+4. Bot permissions issue - Bot might lack permissions to send messages
+5. Processing delay - Bot might still be processing the giveaway
+
+TROUBLESHOOTING STEPS:
+1. Check the original giveaway message - Does it show as ENDED?
+2. Count how many people reacted with the :tada: emoji
+3. Verify bot has 'Send Messages' and 'View Channel' permissions
+4. Ask participants if they have 100+ messages in the server
+
+SOLUTIONS:
+- If no winner was announced, use /reroll command with the message ID
+- If you suspect a processing issue, contact the bot admin to check logs
+- Consider lowering message requirements for future giveaways
+
+TO ADD DEBUG COMMANDS TO YOUR BOT:
+Add these functions to your main.py file for future troubleshooting:
+
+# Debug command to see active giveaways
+@bot.tree.command(name='debug-giveaways', description='Debug active giveaways (admin only)')
+@app_commands.check(lambda interaction: interaction.user.guild_permissions.administrator)
+async def debug_giveaways(interaction: discord.Interaction):
+    '''Debug command to see active giveaways'''
+    if not active_giveaways:
+        await interaction.response.send_message("No active giveaways found.", ephemeral=True)
+        return
+    
+    embed = discord.Embed(title="Active Giveaways Debug", color=0x5865F2)
+    
+    for msg_id, giveaway in active_giveaways.items():
+        status = "ENDED" if giveaway.get('ended', False) else "ACTIVE"
+        time_left = "N/A" if giveaway.get('ended', False) else str(giveaway.get('end_time', 'Unknown'))
+        
+        value = f"**Prize:** {giveaway.get('prize', 'Unknown')}\n"
+        value += f"**Channel:** <#{giveaway.get('channel_id', 'Unknown')}>\n"
+        value += f"**Status:** {status}\n"
+        value += f"**End Time:** {time_left}\n"
+        value += f"**Host:** {giveaway.get('host', 'Unknown')}"
+        
+        embed.add_field(name=f"ID: {msg_id}", value=value, inline=False)
+    
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+# Force end command
+@bot.tree.command(name='force-end-giveaway', description='Force end a giveaway immediately (admin only)')
+@app_commands.describe(message_id='The message ID of the giveaway to force end')
+@app_commands.check(lambda interaction: interaction.user.guild_permissions.administrator)
+async def force_end_giveaway_now(interaction: discord.Interaction, message_id: str):
+    '''Force end a giveaway immediately'''
+    try:
+        msg_id = int(message_id)
+    except ValueError:
+        await interaction.response.send_message("Invalid message ID format!", ephemeral=True)
+        return
+    
+    if msg_id not in active_giveaways:
+        await interaction.response.send_message("Giveaway not found in active giveaways!", ephemeral=True)
+        return
+    
+    giveaway = active_giveaways[msg_id]
+    
+    # Force end the giveaway
+    giveaway['ended'] = True
+    await end_giveaway(msg_id)
+    
+    await interaction.response.send_message(f"Giveaway {msg_id} has been force-ended!", ephemeral=True)

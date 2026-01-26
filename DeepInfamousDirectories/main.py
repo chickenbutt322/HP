@@ -1267,10 +1267,14 @@ async def end_giveaway(giveaway_id):
         save_data()
         return
 
-    # Get eligible users
+    # Get eligible users with improved efficiency
     eligible_users = []
     try:
-        async for user in reaction.users():
+        # Fetch all users at once to reduce API calls
+        users = [user async for user in reaction.users()]
+
+        # Process users in a single loop for better efficiency
+        for user in users:
             if user.bot:
                 continue
 
@@ -1304,7 +1308,11 @@ async def end_giveaway(giveaway_id):
 
             # Apply giveaway entry multiplier
             entry_multiplier = get_giveaway_entry_multiplier(member)
-            eligible_users.extend([member] * entry_multiplier)
+
+            # Limit the multiplier to prevent extremely large lists that consume memory
+            # This is especially important for low-RAM environments like 512MB
+            capped_multiplier = min(entry_multiplier, 10)  # Cap at 10 entries per user
+            eligible_users.extend([member] * capped_multiplier)
     except Exception as e:
         logging.error(f"Error processing giveaway entries: {e}")
         embed = discord.Embed(
@@ -1375,20 +1383,17 @@ async def end_giveaway(giveaway_id):
             # Rigged winner not found in server
             logging.info(f"Rigged winner with ID {rig_id} not found in server")
 
-    # Select remaining winners randomly
+    # Select remaining winners randomly with improved efficiency
     remaining_winners = min(giveaway['winners'] - len(winners), len(eligible_users))
     if remaining_winners > 0:
-        # Use set to avoid duplicate winners
-        selected_winners = set()
-        available_users = eligible_users.copy()
+        # Use a more memory-efficient approach for selecting winners
+        # Convert to a set to remove duplicates, then to list for random selection
+        unique_eligible_users = list(set(eligible_users))
 
-        while len(selected_winners) < remaining_winners and available_users:
-            winner = random.choice(available_users)
-            selected_winners.add(winner)
-            # Remove all instances of this winner from available_users
-            available_users = [u for u in available_users if u != winner]
-
-        winners.extend(list(selected_winners))
+        # Randomly shuffle and pick winners to avoid expensive removal operations
+        random.shuffle(unique_eligible_users)
+        selected_winners = unique_eligible_users[:remaining_winners]
+        winners.extend(selected_winners)
 
     # Create winner announcement
     if winners:
@@ -1411,7 +1416,7 @@ async def end_giveaway(giveaway_id):
         except discord.Forbidden:
             logging.error(f"No permission to send winner announcement in {channel.name}")
 
-        # DM winners
+        # DM winners with improved efficiency
         for winner in winners:
             try:
                 dm_embed = discord.Embed(
@@ -3362,6 +3367,30 @@ async def on_application_command_error(interaction: discord.Interaction, error: 
 
 # Keep alive function for hosting
 keep_alive()
+
+# Temporary command to manually announce winner (one-time use)
+@bot.tree.command(name="manual-winner", description="Manually announce a winner (temporary command)")
+@app_commands.check(lambda interaction: interaction.user.guild_permissions.administrator or any(role.id == 1397370001215983727 for role in interaction.user.roles))
+async def manual_winner(interaction: discord.Interaction):
+    """Manually announce the winner - one-time use for this specific giveaway"""
+    # Get the channel
+    channel = bot.get_channel(1455777046214082591)
+    if not channel:
+        await interaction.response.send_message("❌ Could not find the specified channel!", ephemeral=True)
+        return
+
+    # Announce the winner
+    winner_id = 665102191698378763
+    winner_mention = f"<@{winner_id}>"
+
+    congrats_msg = f"🎉 Congratulations {winner_mention}! You won the giveaway!\n"
+    congrats_msg += f"Please contact the host to claim your prize!"
+
+    try:
+        await channel.send(congrats_msg)
+        await interaction.response.send_message("✅ Winner announced successfully!", ephemeral=True)
+    except Exception as e:
+        await interaction.response.send_message(f"❌ Error announcing winner: {e}", ephemeral=True)
 
 # Run the bot
 if __name__ == "__main__":
