@@ -982,7 +982,16 @@ def home():
 
 @app.route('/healthz')
 def health():
-    return {'status': 'ok'}, 200
+    return {'status': 'ok', 'timestamp': time.time()}, 200
+
+@app.route('/uptime')
+def uptime():
+    uptime_seconds = time.time() - psutil.boot_time()
+    return {
+        'status': 'running',
+        'uptime_seconds': uptime_seconds,
+        'timestamp': time.time()
+    }, 200
 
 def run():
     app.run(host='0.0.0.0', port=5000)
