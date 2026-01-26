@@ -18,6 +18,7 @@ from PIL import Image, ImageDraw, ImageFont
 import requests
 from io import BytesIO
 import yt_dlp
+import psutil
 from pymongo import MongoClient
 from bson.objectid import ObjectId
 
