@@ -27,8 +27,6 @@ logging.basicConfig(level=logging.INFO)
 
 load_dotenv()
 TOKEN = os.getenv("TOKEN")
-if not TOKEN:
-    raise ValueError("TOKEN environment variable not set in .env file")
 
 # MongoDB Connection
 MONGODB_URI = os.getenv("MONGODB_URI")
@@ -997,7 +995,7 @@ def uptime():
     }, 200
 
 def run():
-    app.run(host='0.0.0.0', port=8080)
+    app.run(host='0.0.0.0', port=5000)
 
 def keep_alive():
     t = Thread(target=run)
@@ -1016,7 +1014,7 @@ def ping_self():
         repl_url = f"https://{repl_slug}.{repl_owner}.repl.co"
     else:
         # Fallback to localhost if not on Replit
-        repl_url = "http://localhost:8080"
+        repl_url = "http://localhost:5000"
 
     while True:
         try:
@@ -1048,7 +1046,6 @@ def create_keep_alive_task():
 
     # Create the background task
     bot.loop.create_task(background_task())
-
 
 @bot.event
 async def on_ready():
@@ -3422,8 +3419,6 @@ async def on_application_command_error(interaction: discord.Interaction, error: 
         if not interaction.response.is_done():
             await interaction.response.send_message("❌ An error occurred while processing the command.", ephemeral=True)
 
-# Keep alive function for hosting
-keep_alive()
 
 # Temporary command to manually announce winner (one-time use)
 @bot.tree.command(name="manual-winner", description="Manually announce a winner (temporary command)")
@@ -3457,10 +3452,17 @@ if __name__ == "__main__":
     # Start the self-pinging to keep the Repl awake
     start_ping_thread()
 
-    try:
-        # Run the bot with the additional keep-alive task
-        create_keep_alive_task()
-        bot.run(TOKEN)
-    except Exception as e:
-        logging.error(f"Bot failed to start: {e}")
-        print(f"Error starting bot: {e}")
+    if not TOKEN:
+        logging.warning("TOKEN environment variable not set - Flask server running but bot is disabled")
+        logging.info("Set TOKEN secret to enable the Discord bot")
+        import time
+        while True:
+            time.sleep(60)
+    else:
+        try:
+            # Run the additional keep-alive task
+            create_keep_alive_task()
+            bot.run(TOKEN)
+        except Exception as e:
+            logging.error(f"Bot failed to start: {e}")
+            print(f"Error starting bot: {e}")
