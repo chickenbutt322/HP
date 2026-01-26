@@ -20,7 +20,6 @@ from io import BytesIO
 import yt_dlp
 from pymongo import MongoClient
 from bson.objectid import ObjectId
-import psutil
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -983,16 +982,7 @@ def home():
 
 @app.route('/healthz')
 def health():
-    return {'status': 'ok', 'timestamp': time.time()}, 200
-
-@app.route('/uptime')
-def uptime():
-    uptime_seconds = time.time() - psutil.boot_time()
-    return {
-        'status': 'running',
-        'uptime_seconds': uptime_seconds,
-        'timestamp': time.time()
-    }, 200
+    return {'status': 'ok'}, 200
 
 def run():
     app.run(host='0.0.0.0', port=5000)
@@ -1000,52 +990,6 @@ def run():
 def keep_alive():
     t = Thread(target=run)
     t.start()
-
-
-def ping_self():
-    """Ping the health check endpoint to keep the Repl awake"""
-    import requests
-    import time
-    import os
-    repl_slug = os.environ.get("REPL_SLUG")
-    repl_owner = os.environ.get("REPL_OWNER")
-
-    if repl_slug and repl_owner:
-        repl_url = f"https://{repl_slug}.{repl_owner}.repl.co"
-    else:
-        # Fallback to localhost if not on Replit
-        repl_url = "http://localhost:5000"
-
-    while True:
-        try:
-            # Ping your own health check endpoint
-            response = requests.get(f"{repl_url}/healthz")
-            print(f"Pinged {repl_url}/healthz, status: {response.status_code}")
-        except Exception as e:
-            print(f"Error pinging {repl_url}/healthz: {e}")
-        time.sleep(280)  # Ping every 4 minutes 40 seconds (under the 5-min sleep threshold)
-
-
-def start_ping_thread():
-    """Start the self-pinging in a separate thread"""
-    import threading
-    ping_thread = threading.Thread(target=ping_self, daemon=True)
-    ping_thread.start()
-
-# Additional method for Replit compatibility
-def create_keep_alive_task():
-    """Alternative method to keep Replit awake using asyncio"""
-    async def background_task():
-        while True:
-            await asyncio.sleep(280)  # Sleep for 4 minutes 40 seconds
-            try:
-                # Log activity to keep Replit awake
-                print(f"Keep-alive ping at {time.time()}")
-            except Exception as e:
-                print(f"Error in background task: {e}")
-
-    # Create the background task
-    bot.loop.create_task(background_task())
 
 @bot.event
 async def on_ready():
@@ -3446,12 +3390,7 @@ async def manual_winner(interaction: discord.Interaction):
 
 # Run the bot
 if __name__ == "__main__":
-    # Start the keep alive server
     keep_alive()
-
-    # Start the self-pinging to keep the Repl awake
-    start_ping_thread()
-
     if not TOKEN:
         logging.warning("TOKEN environment variable not set - Flask server running but bot is disabled")
         logging.info("Set TOKEN secret to enable the Discord bot")
@@ -3460,8 +3399,6 @@ if __name__ == "__main__":
             time.sleep(60)
     else:
         try:
-            # Run the additional keep-alive task
-            create_keep_alive_task()
             bot.run(TOKEN)
         except Exception as e:
             logging.error(f"Bot failed to start: {e}")
