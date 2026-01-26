@@ -25,9 +25,14 @@ from bson.objectid import ObjectId
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 
-load_dotenv()
-TOKEN = os.getenv("TOKEN")
+import os
+from dotenv import load_dotenv
 
+# Only load .env if running locally and not in Replit
+if not os.getenv("REPL_SLUG"):  # REPL_SLUG is set in Replit
+    load_dotenv()
+
+TOKEN = os.getenv("TOKEN")
 # MongoDB Connection
 MONGODB_URI = os.getenv("MONGODB_URI")
 if MONGODB_URI:
