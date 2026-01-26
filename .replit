@@ -1,4 +1,8 @@
+modules = ["python-3.11"]
 [deployment]
-build = ["sh", "-c", "python -m ensurepip --upgrade && python -m pip install -r requirements.txt"]
-run = ["sh", "-c", "python DeepInfamousDirectories/main.py"]
+build = ["sh", "-c", "python3 -m ensurepip --upgrade --break-system-packages 2>/dev/null || echo \"pip already available\""]
+run = ["sh", "-c", "python3 -m pip install --break-system-packages -r requirements.txt 2>/dev/null || echo \"Installing packages...\" && python3 DeepInfamousDirectories/main.py"]
 deploymentTarget = "cloudrun"
+
+[agent]
+expertMode = true
